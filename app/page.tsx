@@ -9,6 +9,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  Bell,
   Box,
   Braces,
   Check,
@@ -21,7 +22,9 @@ import {
   Copy,
   Download,
   Eye,
+  FileInput,
   FileCode2,
+  FolderOutput,
   Frame,
   Grid2X2,
   GripVertical,
@@ -35,6 +38,7 @@ import {
   MousePointer2,
   PanelBottom,
   PanelTop,
+  PackagePlus,
   Play,
   Plus,
   Redo2,
@@ -55,7 +59,18 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { isTauri, invoke } from "@tauri-apps/api/core";
+import JSZip from "jszip";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  formatHtflPreview,
+  generateHtflProject,
+  generateResponsiveWebFiles,
+  generateWebCode,
+  parseFolingModuleFile,
+  type ExportFile,
+  type FolingModuleDefinition,
+} from "./lib/encoders";
 
 type DeviceId = "desktop" | "tablet" | "mobile";
 type ModuleType =
@@ -69,7 +84,10 @@ type ModuleType =
   | "cards"
   | "image"
   | "form"
-  | "footer";
+  | "footer"
+  | "imported";
+
+type BuiltInModuleType = Exclude<ModuleType, "imported">;
 
 type ModuleItem = {
   id: string;
@@ -88,10 +106,11 @@ type ModuleItem = {
   color: string;
   radius: number;
   visible: boolean;
+  definition?: FolingModuleDefinition;
 };
 
 const moduleCatalog: Array<{
-  type: ModuleType;
+  type: BuiltInModuleType;
   label: string;
   description: string;
   icon: typeof Box;
@@ -115,8 +134,8 @@ const devices: Record<DeviceId, { label: string; width: number; icon: typeof Mon
   mobile: { label: "Mobile", width: 390, icon: Smartphone },
 };
 
-function createModule(type: ModuleType, suffix = Date.now().toString(36)): ModuleItem {
-  const presets: Record<ModuleType, Omit<ModuleItem, "id" | "type">> = {
+function createModule(type: BuiltInModuleType, suffix = Date.now().toString(36)): ModuleItem {
+  const presets: Record<BuiltInModuleType, Omit<ModuleItem, "id" | "type">> = {
     header: { name: "Header / Main", title: "NORTH/STUDIO", body: "Works　About　Journal", height: 78, direction: "row", align: "left", gap: 24, background: "#F2F0E9", color: "#17201D", radius: 0, visible: true },
     hero: { name: "Hero / Editorial", eyebrow: "INDEPENDENT CREATIVE STUDIO", title: "Ideas with\nroom to breathe.", body: "Brand, digital and spaces for people who care about the details.", label: "View selected work", href: "#work", height: 510, direction: "column", align: "left", gap: 20, background: "#DDE4D5", color: "#17201D", radius: 0, visible: true },
     text: { name: "Text / Statement", eyebrow: "ABOUT", title: "Good work begins with a clear point of view.", body: "We pair strategy with design to make useful, memorable things.", height: 250, direction: "column", align: "left", gap: 16, background: "#F2F0E9", color: "#17201D", radius: 0, visible: true },
@@ -130,6 +149,30 @@ function createModule(type: ModuleType, suffix = Date.now().toString(36)): Modul
     footer: { name: "Footer / Main", title: "NORTH/STUDIO", body: "Tokyo · Available worldwide", height: 190, direction: "row", align: "left", gap: 24, background: "#17201D", color: "#F2F0E9", radius: 0, visible: true },
   };
   return { id: `${type}-${suffix}`, type, ...presets[type] };
+}
+
+function createImportedModule(definition: FolingModuleDefinition): ModuleItem {
+  return {
+    id: `imported-${definition.name}-${Date.now().toString(36)}`,
+    type: "imported",
+    name: `FOLING / ${definition.name}`,
+    eyebrow: "IMPORTED MODULE",
+    title: definition.name,
+    body: `${countSnapshotNodes(definition.snapshot)} elements · Foling YAML`,
+    height: 220,
+    direction: "column",
+    align: "left",
+    gap: 12,
+    background: "#E8EBDD",
+    color: "#17201D",
+    radius: 0,
+    visible: true,
+    definition,
+  };
+}
+
+function countSnapshotNodes(node: FolingModuleDefinition["snapshot"]): number {
+  return 1 + (node.children ?? []).reduce((total, child) => total + countSnapshotNodes(child), 0);
 }
 
 const initialModules: Record<DeviceId, ModuleItem[]> = {
@@ -174,6 +217,9 @@ function ModulePreview({ item, compact }: { item: ModuleItem; compact: boolean }
   if (item.type === "image") {
     return <section className="site-image" style={style}><ImageIcon size={30} strokeWidth={1.25} /><strong>{item.title}</strong><span>{item.body}</span></section>;
   }
+  if (item.type === "imported") {
+    return <section className="site-imported" style={style}><div className="imported-badge"><span className="foling-dot">F</span>Foling module</div><PackagePlus size={27} strokeWidth={1.4} /><h2>{item.title}</h2><p>{item.body}</p><small>{item.definition?.snapshot.name}</small></section>;
+  }
   if (item.type === "form") {
     return <section className="site-form" style={style}><span className="site-eyebrow">{item.eyebrow}</span><h2>{item.title}</h2><div className="fake-input">Your email <ArrowRight size={14} /></div><button>{item.label}</button></section>;
   }
@@ -181,23 +227,33 @@ function ModulePreview({ item, compact }: { item: ModuleItem; compact: boolean }
 }
 
 export default function Home() {
+  const nativeApp = isTauri();
   const [activeDevice, setActiveDevice] = useState<DeviceId>("desktop");
   const [modules, setModules] = useState(initialModules);
+  const [customModules, setCustomModules] = useState<FolingModuleDefinition[]>([]);
   const [selectedId, setSelectedId] = useState("hero-hero");
   const [zoom, setZoom] = useState(62);
   const [search, setSearch] = useState("");
   const [activeRail, setActiveRail] = useState<"modules" | "layers">("modules");
   const [codeOpen, setCodeOpen] = useState(false);
-  const [codeTab, setCodeTab] = useState<"HTML" | "CSS" | "JS">("HTML");
+  const [codeTab, setCodeTab] = useState<"HTML" | "CSS" | "JS" | "HTFL">("HTML");
   const [preview, setPreview] = useState(false);
   const [saved, setSaved] = useState(true);
   const [copied, setCopied] = useState(false);
   const [folingOpen, setFolingOpen] = useState(false);
   const [linked, setLinked] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [updateOpen, setUpdateOpen] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [availableUpdate, setAvailableUpdate] = useState<{ version: string; body?: string } | null>(null);
+  const [updateMessage, setUpdateMessage] = useState("現在のバージョン: 0.2.0");
+  const browserModuleInput = useRef<HTMLInputElement>(null);
+  const updateRef = useRef<{ downloadAndInstall: () => Promise<void> } | null>(null);
 
   const activeModules = modules[activeDevice];
   const selected = activeModules.find((item) => item.id === selectedId) ?? activeModules[0];
   const filteredCatalog = moduleCatalog.filter((item) => `${item.label}${item.description}`.toLowerCase().includes(search.toLowerCase()));
+  const filteredCustomModules = customModules.filter((item) => item.name.toLowerCase().includes(search.toLowerCase()));
 
   useEffect(() => {
     if (!activeModules.some((item) => item.id === selectedId) && activeModules[0]) setSelectedId(activeModules[0].id);
@@ -211,20 +267,20 @@ export default function Home() {
     } catch {
       window.localStorage.removeItem("landms-project");
     }
+    const storedModules = window.localStorage.getItem("landms-custom-modules");
+    if (storedModules) {
+      try {
+        setCustomModules(JSON.parse(storedModules) as FolingModuleDefinition[]);
+      } catch {
+        window.localStorage.removeItem("landms-custom-modules");
+      }
+    }
   }, []);
 
-  const generatedCode = useMemo(() => {
-    const html = activeModules.filter((item) => item.visible).map((item) => {
-      const content = item.title || item.label || item.name;
-      if (item.type === "header") return `<header class="lm-header"><a class="lm-logo" href="/">${item.title}</a><nav>${item.body}</nav></header>`;
-      if (item.type === "hero") return `<section class="lm-hero">\n  <p class="eyebrow">${item.eyebrow}</p>\n  <h1>${item.title?.replace("\n", "<br>")}</h1>\n  <p>${item.body}</p>\n  <a href="${item.href}">${item.label}</a>\n</section>`;
-      if (item.type === "footer") return `<footer class="lm-footer"><strong>${item.title}</strong><p>${item.body}</p></footer>`;
-      return `<section class="lm-${item.type}">\n  <h2>${content}</h2>\n  ${item.body ? `<p>${item.body}</p>` : ""}\n</section>`;
-    }).join("\n\n");
-    const css = `:root { --ink: #17201d; --paper: #f2f0e9; }\n* { box-sizing: border-box; }\nbody { margin: 0; color: var(--ink); background: var(--paper); font-family: Arial, sans-serif; }\n${activeModules.map((item) => `.lm-${item.type} { min-height: ${item.height}px; display: flex; flex-direction: ${item.direction}; gap: ${item.gap}px; background: ${item.background}; color: ${item.color}; border-radius: ${item.radius}px; padding: 48px; }`).join("\n")}\n@media (max-width: 768px) { section { padding: 28px; } }`;
-    const js = `document.querySelectorAll('[data-carousel]').forEach((carousel) => {\n  const slides = carousel.querySelectorAll('.slide');\n  let current = 0;\n  carousel.querySelector('[data-next]')?.addEventListener('click', () => {\n    current = (current + 1) % slides.length;\n    slides.forEach((slide, index) => slide.hidden = index !== current);\n  });\n});`;
-    return { HTML: `<!doctype html>\n<html lang="ja">\n<head>\n  <meta charset="UTF-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n  <title>North Studio</title>\n  <link rel="stylesheet" href="style.css">\n</head>\n<body>\n${html}\n<script src="main.js"></script>\n</body>\n</html>`, CSS: css, JS: js };
-  }, [activeModules]);
+  const webCode = useMemo(() => generateWebCode(activeModules), [activeModules]);
+  const htflFiles = useMemo(() => generateHtflProject(activeModules), [activeModules]);
+  const responsiveWebFiles = useMemo(() => generateResponsiveWebFiles(modules), [modules]);
+  const generatedCode = useMemo(() => ({ ...webCode, HTFL: formatHtflPreview(htflFiles) }), [webCode, htflFiles]);
 
   const updateSelected = (patch: Partial<ModuleItem>) => {
     if (!selected) return;
@@ -232,8 +288,19 @@ export default function Home() {
     setSaved(false);
   };
 
-  const addModule = (type: ModuleType, at?: number) => {
+  const addModule = (type: BuiltInModuleType, at?: number) => {
     const item = createModule(type);
+    setModules((current) => {
+      const next = [...current[activeDevice]];
+      next.splice(at ?? next.length, 0, item);
+      return { ...current, [activeDevice]: next };
+    });
+    setSelectedId(item.id);
+    setSaved(false);
+  };
+
+  const addImportedModule = (definition: FolingModuleDefinition, at?: number) => {
+    const item = createImportedModule(definition);
     setModules((current) => {
       const next = [...current[activeDevice]];
       next.splice(at ?? next.length, 0, item);
@@ -282,17 +349,127 @@ export default function Home() {
     window.setTimeout(() => setCopied(false), 1400);
   };
 
-  const downloadHtml = () => {
-    const standaloneHtml = generatedCode.HTML
-      .replace('<link rel="stylesheet" href="style.css">', `<style>\n${generatedCode.CSS}\n</style>`)
-      .replace('<script src="main.js"></script>', `<script>\n${generatedCode.JS}\n</script>`);
-    const blob = new Blob([standaloneHtml], { type: "text/html" });
+  const downloadBlob = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = "landms-export.html";
+    anchor.download = filename;
     anchor.click();
     URL.revokeObjectURL(url);
+  };
+
+  const exportFiles = async (projectName: string, files: ExportFile[]) => {
+    if (nativeApp) {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const parent = await open({ directory: true, multiple: false, title: "書き出し先フォルダーを選択" });
+      if (typeof parent !== "string") return;
+      const destination = await invoke<string>("export_files", { parent, projectName, files });
+      setNotice(`書き出しました: ${destination}`);
+      return;
+    }
+    const archive = new JSZip();
+    files.forEach((file) => archive.file(file.path, file.content));
+    const blob = await archive.generateAsync({ type: "blob" });
+    downloadBlob(blob, `${projectName}.zip`);
+    setNotice(`${projectName}.zip を書き出しました`);
+  };
+
+  const exportWebProject = () => exportFiles("LandMs-Web", responsiveWebFiles)
+    .catch((error) => setNotice(`書き出しに失敗しました: ${String(error)}`));
+
+  const exportHtflProject = () => exportFiles("LandMs-HTFL", htflFiles)
+    .catch((error) => setNotice(`HTFL書き出しに失敗しました: ${String(error)}`));
+
+  const registerModuleSource = (source: string) => {
+    const imported = parseFolingModuleFile(source);
+    setCustomModules((current) => {
+      const next = [...current];
+      imported.forEach((module) => {
+        const index = next.findIndex((existing) => existing.name === module.name);
+        if (index >= 0) next[index] = module;
+        else next.push(module);
+      });
+      window.localStorage.setItem("landms-custom-modules", JSON.stringify(next));
+      return next;
+    });
+    setNotice(`${imported.length}件のFolingモジュールを読み込みました`);
+  };
+
+  const importModuleFlow = async () => {
+    try {
+      if (!nativeApp) {
+        browserModuleInput.current?.click();
+        return;
+      }
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const path = await open({
+        multiple: false,
+        title: "Folingモジュールを読み込む",
+        filters: [{ name: "Foling module", extensions: ["yaml", "yml"] }],
+      });
+      if (typeof path !== "string") return;
+      registerModuleSource(await invoke<string>("read_module_file", { path }));
+    } catch (error) {
+      setNotice(`モジュールを読み込めません: ${String(error)}`);
+    }
+  };
+
+  const handleBrowserModuleFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      registerModuleSource(await file.text());
+    } catch (error) {
+      setNotice(`モジュールを読み込めません: ${String(error)}`);
+    }
+  };
+
+  const checkForUpdates = async (automatic = false) => {
+    if (!nativeApp) {
+      if (!automatic) {
+        setUpdateMessage("アップデートはTauriデスクトップ版で利用できます。");
+        setUpdateOpen(true);
+      }
+      return;
+    }
+    setCheckingUpdate(true);
+    if (!automatic) setUpdateOpen(true);
+    setUpdateMessage("アップデートを確認しています…");
+    try {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (!update) {
+        setAvailableUpdate(null);
+        setUpdateMessage("LandMsは最新です（v0.2.0）。");
+        return;
+      }
+      updateRef.current = update;
+      setAvailableUpdate({ version: update.version, body: update.body ?? undefined });
+      setUpdateMessage(`新しいバージョン v${update.version} を利用できます。`);
+      const notifications = await import("@tauri-apps/plugin-notification");
+      let permission = await notifications.isPermissionGranted();
+      if (!permission) permission = (await notifications.requestPermission()) === "granted";
+      if (permission) notifications.sendNotification({ title: "LandMs アップデート", body: `バージョン ${update.version} を利用できます` });
+    } catch (error) {
+      setUpdateMessage(`更新情報を取得できませんでした: ${String(error)}`);
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
+  const installUpdate = async () => {
+    if (!updateRef.current) return;
+    setCheckingUpdate(true);
+    setUpdateMessage("アップデートをダウンロードしてインストールしています…");
+    try {
+      await updateRef.current.downloadAndInstall();
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      await relaunch();
+    } catch (error) {
+      setUpdateMessage(`アップデートに失敗しました: ${String(error)}`);
+      setCheckingUpdate(false);
+    }
   };
 
   const saveProject = () => {
@@ -300,14 +477,23 @@ export default function Home() {
     setSaved(true);
   };
 
+  useEffect(() => {
+    if (!nativeApp) return;
+    const timer = window.setTimeout(() => { void checkForUpdates(true); }, 1800);
+    return () => window.clearTimeout(timer);
+    // The update check intentionally runs once when the desktop app starts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nativeApp]);
+
   return (
     <main className={`app-shell ${preview ? "preview-mode" : ""}`}>
-      <header className="topbar">
-        <div className="brand-lockup"><div className="brand-mark"><span></span><span></span></div><strong>LandMs</strong><span className="beta">BETA</span></div>
+      <header className="topbar" data-tauri-drag-region>
+        <div className="brand-lockup"><div className="brand-mark"><span></span><span></span></div><strong>LandMs</strong><span className="beta">{nativeApp ? "DESKTOP" : "WEB"}</span></div>
         <div className="project-crumb"><span>Web projects</span><ChevronRight size={13} /><button>North Studio <ChevronDown size={13} /></button><span className={`save-state ${saved ? "" : "unsaved"}`}>{saved ? "保存済み" : "未保存"}</span></div>
         <div className="top-actions">
           <button className="icon-button" aria-label="Undo"><Undo2 size={16} /></button>
           <button className="icon-button muted" aria-label="Redo"><Redo2 size={16} /></button>
+          <button className={`icon-button update-button ${availableUpdate ? "has-update" : ""}`} aria-label="アップデートを確認" title="アップデートを確認" onClick={() => { void checkForUpdates(false); }}><Bell size={16} />{availableUpdate && <i></i>}</button>
           <span className="top-divider"></span>
           <button className={`tool-button ${linked ? "is-linked" : ""}`} onClick={() => setFolingOpen(true)}><span className="foling-dot">F</span>{linked ? "Foling 接続済み" : "Foling と連携"}</button>
           <button className="tool-button" onClick={() => setCodeOpen(true)}><Code2 size={16} />コード</button>
@@ -315,6 +501,7 @@ export default function Home() {
           <button className="publish-button" onClick={saveProject}><Share2 size={15} />保存</button>
         </div>
       </header>
+      <input ref={browserModuleInput} className="native-file-input" type="file" accept=".yaml,.yml,text/yaml" onChange={handleBrowserModuleFile} />
 
       {!preview && <aside className="rail">
         <button className={activeRail === "modules" ? "active" : ""} onClick={() => setActiveRail("modules")}><Component size={20} /><span>モジュール</span></button>
@@ -326,7 +513,7 @@ export default function Home() {
 
       {!preview && <aside className="left-panel">
         {activeRail === "modules" ? <>
-          <div className="panel-heading"><div><span className="panel-kicker">FOLING LIBRARY</span><h2>モジュール</h2></div><button className="tiny-button"><Plus size={15} /></button></div>
+          <div className="panel-heading"><div><span className="panel-kicker">FOLING LIBRARY</span><h2>モジュール</h2></div><button className="tiny-button" title="Folingモジュールをインポート" aria-label="Folingモジュールをインポート" onClick={() => { void importModuleFlow(); }}><FileInput size={15} /></button></div>
           <label className="search-box"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="モジュールを検索" /></label>
           <div className="library-info"><span><span className="live-dot"></span>Foling Core</span><span>v0.8.4</span></div>
           <div className="module-grid">
@@ -335,6 +522,12 @@ export default function Home() {
               return <button key={module.type} draggable onDragStart={(event) => event.dataTransfer.setData("landms/type", module.type)} onClick={() => addModule(module.type)}><span className="module-icon"><Icon size={19} strokeWidth={1.6} /></span><strong>{module.label}</strong><small>{module.description}</small><GripVertical className="drag-hint" size={13} /></button>;
             })}
           </div>
+          {filteredCustomModules.length > 0 && <>
+            <div className="library-info imported-library"><span><span className="live-dot"></span>Imported</span><span>{filteredCustomModules.length} modules</span></div>
+            <div className="module-grid custom-module-grid">
+              {filteredCustomModules.map((module) => <button key={module.name} draggable onDragStart={(event) => event.dataTransfer.setData("landms/imported", module.name)} onClick={() => addImportedModule(module)}><span className="module-icon imported-icon"><PackagePlus size={19} strokeWidth={1.6} /></span><strong>{module.name}</strong><small>{countSnapshotNodes(module.snapshot)} elements</small><GripVertical className="drag-hint" size={13} /></button>)}
+            </div>
+          </>}
           <div className="panel-tip"><Sparkles size={15} /><p><strong>ドラッグして配置</strong><br />クリックでも末尾に追加できます</p></div>
         </> : <>
           <div className="panel-heading"><div><span className="panel-kicker">STRUCTURE</span><h2>レイヤー</h2></div><button className="tiny-button"><Plus size={15} /></button></div>
@@ -359,8 +552,8 @@ export default function Home() {
 
         <div className="canvas-area">
           {!preview && <div className="canvas-label"><span>{devices[activeDevice].label}</span><small>{devices[activeDevice].width} × auto</small></div>}
-          <div className={`page-frame device-${activeDevice}`} style={!preview ? { width: `${Math.min(devices[activeDevice].width * (zoom / 100), activeDevice === "desktop" ? 890 : 720)}px` } : undefined} onDragOver={(event) => { event.preventDefault(); event.currentTarget.classList.add("drag-over"); }} onDragLeave={(event) => event.currentTarget.classList.remove("drag-over")} onDrop={(event) => { event.preventDefault(); event.currentTarget.classList.remove("drag-over"); const type = event.dataTransfer.getData("landms/type") as ModuleType; if (type) addModule(type); }}>
-            {activeModules.map((item, index) => item.visible && <div key={item.id} className={`canvas-module ${selected?.id === item.id && !preview ? "selected" : ""}`} onClick={(event) => { event.stopPropagation(); setSelectedId(item.id); }} draggable={!preview} onDragStart={(event) => event.dataTransfer.setData("landms/reorder", item.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.stopPropagation(); const moving = event.dataTransfer.getData("landms/reorder"); const type = event.dataTransfer.getData("landms/type") as ModuleType; if (type) return addModule(type, index); if (!moving || moving === item.id) return; const from = activeModules.findIndex((entry) => entry.id === moving); const next = [...activeModules]; const [moved] = next.splice(from, 1); next.splice(index, 0, moved); setModules((current) => ({ ...current, [activeDevice]: next })); setSaved(false); }}>
+          <div className={`page-frame device-${activeDevice}`} style={!preview ? { width: `${Math.min(devices[activeDevice].width * (zoom / 100), activeDevice === "desktop" ? 890 : 720)}px` } : undefined} onDragOver={(event) => { event.preventDefault(); event.currentTarget.classList.add("drag-over"); }} onDragLeave={(event) => event.currentTarget.classList.remove("drag-over")} onDrop={(event) => { event.preventDefault(); event.currentTarget.classList.remove("drag-over"); const type = event.dataTransfer.getData("landms/type") as BuiltInModuleType; const importedName = event.dataTransfer.getData("landms/imported"); if (type) addModule(type); else if (importedName) { const definition = customModules.find((entry) => entry.name === importedName); if (definition) addImportedModule(definition); } }}>
+            {activeModules.map((item, index) => item.visible && <div key={item.id} className={`canvas-module ${selected?.id === item.id && !preview ? "selected" : ""}`} onClick={(event) => { event.stopPropagation(); setSelectedId(item.id); }} draggable={!preview} onDragStart={(event) => event.dataTransfer.setData("landms/reorder", item.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.stopPropagation(); const moving = event.dataTransfer.getData("landms/reorder"); const type = event.dataTransfer.getData("landms/type") as BuiltInModuleType; const importedName = event.dataTransfer.getData("landms/imported"); if (type) return addModule(type, index); if (importedName) { const definition = customModules.find((entry) => entry.name === importedName); if (definition) addImportedModule(definition, index); return; } if (!moving || moving === item.id) return; const from = activeModules.findIndex((entry) => entry.id === moving); const next = [...activeModules]; const [moved] = next.splice(from, 1); next.splice(index, 0, moved); setModules((current) => ({ ...current, [activeDevice]: next })); setSaved(false); }}>
               {!preview && selected?.id === item.id && <div className="selection-label"><span>{item.name}</span><div><button onClick={(event) => { event.stopPropagation(); moveSelected(-1); }}><ArrowUp size={12} /></button><button onClick={(event) => { event.stopPropagation(); moveSelected(1); }}><ArrowDown size={12} /></button></div></div>}
               <ModulePreview item={item} compact={!preview} />
               {!preview && selected?.id === item.id && <><i className="handle nw"></i><i className="handle ne"></i><i className="handle sw"></i><i className="handle se"></i></>}
@@ -401,9 +594,9 @@ export default function Home() {
       {codeOpen && <div className="modal-backdrop" onMouseDown={() => setCodeOpen(false)}>
         <section className="code-modal" onMouseDown={(event) => event.stopPropagation()}>
           <header><div><span className="modal-icon"><FileCode2 size={19} /></span><div><h2>生成コード</h2><p>{devices[activeDevice].label} · Foling モジュールから生成</p></div></div><button className="close-button" onClick={() => setCodeOpen(false)}><X size={18} /></button></header>
-          <div className="code-tabs">{(["HTML", "CSS", "JS"] as const).map((tab) => <button key={tab} className={codeTab === tab ? "active" : ""} onClick={() => setCodeTab(tab)}>{tab}</button>)}<span></span><button className="code-action" onClick={copyCode}>{copied ? <Check size={14} /> : <Copy size={14} />}{copied ? "コピー済み" : "コピー"}</button><button className="code-action" onClick={downloadHtml}><Download size={14} />書き出す</button></div>
+          <div className="code-tabs">{(["HTML", "CSS", "JS", "HTFL"] as const).map((tab) => <button key={tab} className={codeTab === tab ? "active" : ""} onClick={() => setCodeTab(tab)}>{tab}</button>)}<span></span><button className="code-action" onClick={copyCode}>{copied ? <Check size={14} /> : <Copy size={14} />}{copied ? "コピー済み" : "コピー"}</button><button className="code-action" onClick={() => { void exportWebProject(); }}><FolderOutput size={14} />Web一式</button><button className="code-action htfl-action" onClick={() => { void exportHtflProject(); }}><Download size={14} />HTFL</button></div>
           <pre><code>{generatedCode[codeTab]}</code></pre>
-          <footer><span><span className="live-dot"></span>変更内容と同期中</span><button onClick={() => setFolingOpen(true)}><Braces size={14} />Foling で開く</button></footer>
+          <footer><span><span className="live-dot"></span>Foling HTFL仕様と互換</span><button onClick={() => setFolingOpen(true)}><Braces size={14} />Foling で開く</button></footer>
         </section>
       </div>}
 
@@ -417,6 +610,21 @@ export default function Home() {
           <small className="connect-note">この初期版ではローカルのモック接続です。実際の Foling API 接続先はあとから設定できます。</small>
         </section>
       </div>}
+
+      {updateOpen && <div className="modal-backdrop" onMouseDown={() => setUpdateOpen(false)}>
+        <section className="update-modal" onMouseDown={(event) => event.stopPropagation()}>
+          <button className="close-button" onClick={() => setUpdateOpen(false)}><X size={18} /></button>
+          <span className={`update-visual ${availableUpdate ? "available" : ""}`}><Bell size={25} /></span>
+          <span className="panel-kicker">DESKTOP UPDATE</span>
+          <h2>{availableUpdate ? `LandMs ${availableUpdate.version}` : "アップデート"}</h2>
+          <p>{updateMessage}</p>
+          {availableUpdate?.body && <div className="release-notes">{availableUpdate.body}</div>}
+          {availableUpdate ? <button className="connect-button" disabled={checkingUpdate} onClick={() => { void installUpdate(); }}><Download size={15} />{checkingUpdate ? "インストール中…" : "ダウンロードして再起動"}</button> : <button className="connect-button" disabled={checkingUpdate} onClick={() => { void checkForUpdates(false); }}><RefreshCw size={15} />{checkingUpdate ? "確認中…" : "もう一度確認"}</button>}
+          <small className="connect-note">更新は署名を検証してから適用されます。Web版のデータには影響しません。</small>
+        </section>
+      </div>}
+
+      {notice && <div className="app-toast"><Check size={15} /><span>{notice}</span><button aria-label="通知を閉じる" onClick={() => setNotice("")}><X size={14} /></button></div>}
     </main>
   );
 }

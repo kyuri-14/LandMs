@@ -40,6 +40,10 @@ yarn-error.log*
 # typescript
 next-env.d.ts
 /dist/
+/desktop-dist/
+/src-tauri/gen/
+/src-tauri/target/
+*.tsbuildinfo
 /.wrangler/
 /outputs/
 /work/
