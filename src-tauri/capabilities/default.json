@@ -2,10 +2,13 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "LandMs main window capabilities",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "core:window:default",
+    "core:window:allow-start-dragging",
     "dialog:allow-open",
     "dialog:allow-save",
     "notification:default",

@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (typecheck · test · build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  foling-parity:
+    name: Foling builder parity
+    # Builds Foling's own `foling-mcp` and checks that LandMs' HTFL output is
+    # rendered byte-for-byte the same by Foling and by LandMs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: kyuri-14/Foling
+          path: foling
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: foling/src-tauri
+      - name: Install Linux dependencies (Tauri)
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Build foling-mcp
+        run: |
+          mkdir -p foling/dist && echo '<!doctype html>' > foling/dist/index.html
+          cargo build --manifest-path foling/src-tauri/Cargo.toml --bin foling-mcp
+      - run: npm ci
+      - run: npx vitest run tests/foling-parity.test.ts
+        env:
+          FOLING_MCP: ${{ github.workspace }}/foling/src-tauri/target/debug/foling-mcp
+
+  rust:
+    name: Rust (test)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test

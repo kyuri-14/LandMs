@@ -1,60 +1,47 @@
 {
   "name": "landms",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "license": "AGPL-3.0-or-later",
+  "description": "LandMs (Layout & Modules) — visual layout editor for Foling modules",
+  "type": "module",
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=20.19.0"
   },
   "scripts": {
-    "dev": "vinext dev",
-    "build": "vinext build",
-    "start": "vinext start",
-    "desktop:dev": "vite --config vite.desktop.config.ts",
-    "desktop:build": "vite build --config vite.desktop.config.ts",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs && npm run test:encoders",
-    "test:encoders": "tsx --test tests/encoders.test.ts",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/geist-mono": "^5.3.0",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
-    "drizzle-orm": "0.45.2",
     "js-yaml": "^5.2.3",
     "jszip": "^3.10.1",
     "lucide-react": "^0.536.0",
-    "next": "16.2.6",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.37.1",
-    "@tailwindcss/postcss": "4.2.1",
     "@tauri-apps/cli": "^2.11.4",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
-    "@vitejs/plugin-rsc": "0.5.26",
-    "drizzle-kit": "0.31.10",
-    "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
-    "react-server-dom-webpack": "19.2.6",
-    "tailwindcss": "4.2.1",
-    "tsx": "^4.23.8",
     "typescript": "5.9.3",
-    "vinext": "0.0.50",
-    "vite": "8.0.13",
-    "wrangler": "4.92.0"
-  },
-  "type": "module"
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0"
+  }
 }

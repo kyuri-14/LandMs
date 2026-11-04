@@ -1,62 +1,94 @@
 # LandMs — Layout & Modules
 
-LandMs（ランダムズ）は、Figmaのように画面を見ながらレイアウトを組み、Folingのモジュールを配置してWebサイトを制作する、AGPLのビジュアルエディターです。Web版とTauriデスクトップ版を同じ編集コアから提供します。
+LandMs（ランダムズ）は、Figma のように **レイアウト（L）** を組み、そこへ **Foling のモジュール（Ms）** を並べて Web サイトをつくる、AGPL のビジュアルエディターです。[Foling](https://github.com/kyuri-14/Foling) のビジュアル版として、同じ HTFL 形式で相互にやり取りできます。
 
-## 機能
+- デスクトップ版（Tauri: Windows / macOS / Linux）と Web 版を、同じコードから提供します。
+- 出力は **HTML / CSS / JavaScript** と **HTFL（Foling プロジェクト）** の両方に対応しています。
 
-- Folingモジュールの追加、ドラッグ配置、並べ替え、複製、削除
-- `flex-direction`、配置、サイズ、間隔、色、角丸、文言、リンクの編集
-- Desktop / Tablet / Mobileごとの画面構成
-- 編集内容とインポート済みモジュールの端末内保存
-- HTML / CSS / JavaScript一式の書き出し
-- Foling互換HTFLプロジェクトの書き出し
-  - `htfl.yaml`
-  - `HTML/`要素ツリー
-  - 各要素の`config.yaml`
-  - `classes/`、`images/`、`plugins/`
-- FolingモジュールYAML（`.yaml` / `.yml`）の検証・インポート
-- 署名付きデスクトップアップデートの確認、OS通知、ダウンロード、再起動
+## しくみ
 
-## Tauriデスクトップ版
+```
+画面（Desktop / Tablet / Mobile …）  ← 表示条件（幅）で自動切り替え
+└─ フレーム（ヘッダー・メイン・フッター…）  ← flex の並び方向・揃え・間隔・余白・サイズ
+   ├─ フレーム …（入れ子にできる）
+   └─ モジュール（ハンバーガー・カルーセル・ロゴ…）  ← 中身・リンク・動作を設定
+```
 
-Node.js 22.13以降、Rust stable、各OSのTauriビルド要件が必要です。
+1. **大きさを決める** — ヘッダーの高さ 80px、メインは「塗り（残りを使う）」など、Figma のオートレイアウトと同じ「塗り / 内容 / 固定」で指定します。
+2. **並べ方を決める** — 各フレームで `flex-direction`（→ ↓ ← ↑）、主軸・交差軸の揃え、折り返し、間隔、余白を設定します。
+3. **モジュールを置く** — 左のライブラリからキャンバスへドラッグ（クリックでも追加）。キャンバス上でもレイヤー上でもドラッグで並べ替えられます。
+4. **モジュールを設定する** — 文言・リンク先・画像、項目の追加／削除（メニュー項目やスライドの数）、動作（自動再生の間隔、メニューの開く方向など）を右のパネルで編集します。
+
+## 主な機能
+
+- 実際の HTML を描画するキャンバス（モジュールの CSS・`vw`・`position: fixed` も書き出し結果どおりに表示）
+- ドラッグ＆ドロップでの配置・移動、レイヤーツリー、コピー＆ペースト（画面をまたいで貼り付け可）、元に戻す／やり直し
+- 標準モジュール 16 種（ロゴ、ナビ、ハンバーガー、SNS リンク、ヒーロー、見出し、テキスト、ボタン、カード、FAQ、カルーセル、画像、フォーム、コピーライト、スペーサー、区切り線）。すべて Foling のモジュール形式です
+- **レスポンシブ**: 画面ごとに別レイアウトを持ち、`@media` の幅条件で表示を切り替え。条件の重なり・抜けは警告します
+- **プレビュー**: モジュールのスクリプトを実際に動かして確認（幅を自由に変えて切り替わりを確認可能）。ブラウザでも開けます
+- **コード**: HTML / CSS / JS / HTFL / Foling 出力をいつでも表示・コピー。選択中の要素の `config.yaml` も確認・モジュールの YAML を直接編集できます
+- **書き出し**: HTML / CSS / JS 一式、1 ファイル HTML、HTFL プロジェクト、Foling モジュール YAML
+- **Foling 連携**: Foling プロジェクトの `modules/` やモジュール YAML の読み込み、HTFL プロジェクトとしての書き出し
+- **アップデート**（デスクトップ版）: 起動時と 6 時間ごとに確認し、OS 通知 → ワンクリックで更新・再起動（署名を検証）
+- プロジェクトの保存（`.landms`）と自動保存
+
+## ダウンロード
+
+[Releases](https://github.com/kyuri-14/LandMs/releases) から OS ごとのインストーラーを入手できます（Windows は `LandMs_x.y.z_x64-setup.exe`）。
+※ まだコード署名をしていないため、初回起動時に Windows SmartScreen / macOS Gatekeeper の警告が出ます。
+
+## 開発
+
+必要なもの: Node.js 20.19 以降、Rust（stable）、各 OS の [Tauri 2 の前提ソフト](https://tauri.app/start/prerequisites/)（Windows は WebView2）。
 
 ```bash
 npm install
-npm run tauri:dev
+npm run tauri:dev      # デスクトップ版を起動
+npm run dev            # Web 版（http://localhost:1420/）
 ```
-
-Windowsで実行ファイルだけを生成する場合：
 
 ```bash
-npm run tauri:build -- --debug --no-bundle
+npm run tauri:build    # インストーラーを作成（src-tauri/target/release/bundle/）
+npm run build          # Web 版を dist/ に出力（静的ファイルなのでどこにでも置けます）
+npm test               # 単体テスト
 ```
 
-生成先は`src-tauri/target/debug/landms.exe`です。インストーラーを含む正式ビルドは`npm run tauri:build`で生成できます。
-
-## Web版
+Foling 本体のビルド結果との一致テスト（`tests/foling-parity.test.ts`）は、Foling の `foling-mcp` を指定すると実行されます。
 
 ```bash
-npm run dev
+FOLING_MCP=/path/to/foling-mcp npm test
 ```
 
-ブラウザで`http://localhost:3000/`を開きます。
+### フォルダー構成
 
-## HTFLとFolingモジュール
+| パス | 内容 |
+|---|---|
+| `src/core/` | データモデル、標準モジュール、HTFL / Web エンコーダー（UI に依存しない） |
+| `src/core/htfl.ts` | プロジェクト → HTFL ツリー、HTFL フォルダー出力、Foling のビルド処理（`htfl/build.rs`）の移植 |
+| `src/core/web.ts` | HTML / CSS / JS 出力 |
+| `src/editor/` | キャンバス、レイヤー、インスペクター、ダイアログ |
+| `src/platform/` | デスクトップ版と Web 版の差分（ファイル操作、プレビュー、更新） |
+| `src-tauri/` | Tauri（Rust）側：ファイル入出力、プレビュー用ローカルサーバー |
 
-HTFLはFolingの **HyperText Foldering Language** 仕様に従い、HTML DOMをフォルダー階層と`config.yaml`で表現します。LandMsのHTFLタブは内容確認用で、書き出し操作ではFolingがそのまま開けるフォルダー構造を生成します。
+## HTFL / Foling との対応
 
-モジュールインポートはFolingのモジュール定義配列（`name`、`snapshot`、任意の`css`）を受け付けます。インポートしたモジュールは左側の「Imported」ライブラリから配置できます。
+- 画面は `HTML/02_body/NN_div`（`class: lm-screen`, `data-screen`）、フレームは `NN_header` / `NN_main` などのフォルダー、レイアウトは各 `config.yaml` の `css:` になります。
+- 標準モジュールの CSS は `classes/` に、使用したモジュール定義は `modules/landms.yaml` に書き出されます。
+- 画面の切り替えは `classes/00_landms-base.css` のメディアクエリで行うため、Foling でもスクリプトなしで動作します。
+- 既知の差異: Foling は `<body>` 内の `id` を行番号に置き換えるため、フレームに付けたアンカー（`#contact` など）は Foling でビルドした HTML では効きません。LandMs の HTML / CSS / JS 書き出しでは有効です。
 
-## アップデート公開
+## アップデートの公開
 
-`.github/workflows/release.yml`が`v*`タグからWindows / macOS / Linux用リリースと`latest.json`を生成します。GitHubリポジトリに次のActions secretsを設定してください。
+`v*` タグを push すると `.github/workflows/release.yml` が各 OS のインストーラーと `latest.json` を含む**下書きリリース**を作成します。下書きを公開すると、インストール済みの LandMs に更新通知が届きます。
 
-- `TAURI_SIGNING_PRIVATE_KEY`
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+GitHub リポジトリの **Settings → Secrets and variables → Actions** に次を登録してください。
 
-Tauri設定の公開鍵はFolingと同じ署名鍵を使用する前提です。別の秘密鍵を使う場合は`src-tauri/tauri.conf.json`の`plugins.updater.pubkey`も対応する公開鍵に変更してください。
+- `TAURI_SIGNING_PRIVATE_KEY` — 更新署名用の秘密鍵
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — その鍵のパスワード
+
+`src-tauri/tauri.conf.json` の `plugins.updater.pubkey` は Foling と同じ公開鍵です。Foling のリリースに使っている秘密鍵をそのまま登録してください。別の鍵を使う場合は `npx tauri signer generate -w ~/.tauri/landms.key` で作成し、表示された公開鍵で `pubkey` を置き換えます（秘密鍵は絶対にコミットしないでください）。
 
 ## ライセンス
 
-GNU Affero General Public License v3.0 or later（`AGPL-3.0-or-later`）。ネットワーク越しに改変版を提供する場合も、利用者に対応するソースコードを提供する必要があります。
+[GNU Affero General Public License v3.0 or later](LICENSE)（AGPL-3.0-or-later）。
+改変版をネットワーク越しに提供する場合も、利用者に対応するソースコードを提供する必要があります（AGPL 第 13 条）。アプリの「設定」にソースコードへのリンクがあります。
