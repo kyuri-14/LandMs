@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LandMs",
+  "version": "0.3.0",
+  "identifier": "app.landms.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "LandMs — Layout & Modules",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1080,
+        "minHeight": 680,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "label": "main"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: blob: https: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; frame-src 'self' blob: http://127.0.0.1:*; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Visual layout editor for Foling modules",
+    "longDescription": "LandMs (Layout & Modules) is an AGPL visual editor: lay out frames like in Figma, place Foling modules, and export HTML/CSS/JavaScript or a Foling HTFL project.",
+    "copyright": "AGPL-3.0-or-later",
+    "licenseFile": "../LICENSE"
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/kyuri-14/LandMs/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhDQUFDRjhGNzg2OEVFRjcKUldUMzdtaDRqOCtxak1CUUdjNUFGTDdXWXlnUjhSdU03NnQyMUw1c2IvWEdvTTNxS0xQRDlrVzkK"
+    }
+  }
+}
