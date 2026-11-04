@@ -79,14 +79,27 @@ FOLING_MCP=/path/to/foling-mcp npm test
 
 ## アップデートの公開
 
-`v*` タグを push すると `.github/workflows/release.yml` が各 OS のインストーラーと `latest.json` を含む**下書きリリース**を作成します。下書きを公開すると、インストール済みの LandMs に更新通知が届きます。
+### 初回だけ: 署名鍵を登録する
 
-GitHub リポジトリの **Settings → Secrets and variables → Actions** に次を登録してください。
+GitHub リポジトリの **Settings → Secrets and variables → Actions → New repository secret** で次を登録します。
 
-- `TAURI_SIGNING_PRIVATE_KEY` — 更新署名用の秘密鍵
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — その鍵のパスワード
+| 名前 | 値 |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | 更新署名用の秘密鍵ファイル（`.key`）の中身 |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | その鍵のパスワード（パスワードなしの鍵なら登録不要） |
 
-`src-tauri/tauri.conf.json` の `plugins.updater.pubkey` は Foling と同じ公開鍵です。Foling のリリースに使っている秘密鍵をそのまま登録してください。別の鍵を使う場合は `npx tauri signer generate -w ~/.tauri/landms.key` で作成し、表示された公開鍵で `pubkey` を置き換えます（秘密鍵は絶対にコミットしないでください）。
+`src-tauri/tauri.conf.json` の `plugins.updater.pubkey` は Foling と同じ公開鍵なので、Foling のリリースに使っている秘密鍵をそのまま登録してください。別の鍵にしたい場合は `npx tauri signer generate -w ~/.tauri/landms.key` で作成し、表示された公開鍵で `pubkey` を置き換えます（秘密鍵は絶対にコミットしないでください）。
+
+### リリースのたびに
+
+```bash
+npm run version:set -- 0.3.1     # package.json / tauri.conf.json / Cargo.toml をまとめて更新
+git commit -am "Release v0.3.1"
+git tag v0.3.1
+git push origin main v0.3.1
+```
+
+タグを push すると `.github/workflows/release.yml` が各 OS のインストーラー、署名、`latest.json` を含む**下書きリリース**を作成します（鍵の未登録やタグとバージョンの食い違いは最初の数秒で検出して止まります）。GitHub の Releases で下書きを **Publish** すると、インストール済みの LandMs に更新通知が届きます。
 
 ## ライセンス
 

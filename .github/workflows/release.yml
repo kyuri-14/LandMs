@@ -10,7 +10,26 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Fail in seconds, not after three 15-minute builds, when the release
+  # cannot produce a working update.
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update-signing key is configured
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::Secret TAURI_SIGNING_PRIVATE_KEY is not set (Settings > Secrets and variables > Actions). See README: アップデートの公開"
+            exit 1
+          fi
+      - name: Tag matches the app version
+        if: github.ref_type == 'tag'
+        run: node scripts/version.mjs check "${GITHUB_REF_NAME}"
+
   release:
+    needs: preflight
     permissions:
       contents: write
     strategy:
