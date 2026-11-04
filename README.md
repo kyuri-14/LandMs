@@ -99,7 +99,22 @@ git tag v0.3.1
 git push origin main v0.3.1
 ```
 
-タグを push すると `.github/workflows/release.yml` が各 OS のインストーラー、署名、`latest.json` を含む**下書きリリース**を作成します（鍵の未登録やタグとバージョンの食い違いは最初の数秒で検出して止まります）。GitHub の Releases で下書きを **Publish** すると、インストール済みの LandMs に更新通知が届きます。
+タグを push すると `.github/workflows/release.yml` が各 OS のインストーラー、署名、`latest.json` を含む**下書きリリース**を作成します。GitHub の Releases で下書きを **Publish** すると、インストール済みの LandMs に更新通知が届きます。
+
+タグを使わずに **Actions → Release → Run workflow**（Branch: `main`）から実行しても、バージョン番号のタグと下書きリリースが作られます。
+
+### うまくいかないとき
+
+ビルドの前に `preflight` ジョブが秘密鍵で実際に署名を試し、問題があれば数十秒で止まって原因を表示します。
+
+| 表示 | 直し方 |
+|---|---|
+| contains the variable name | Secret の値に `TAURI_SIGNING_PRIVATE_KEY=` などの名前まで入っています。`.key` ファイルの中身（`dW50cnVzdGVk…` で始まる文字列）だけにしてください |
+| holds the PUBLIC key | 公開鍵（`.key.pub`）が入っています。`.key` の方を登録してください |
+| password is wrong | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` を鍵のパスワードにしてください（パスワードなしの鍵なら削除） |
+| does not match the updater public key | 鍵が `tauri.conf.json` の公開鍵と対になっていません。このまま公開すると、インストール済みのアプリが更新を拒否します |
+
+Secret を直したら、失敗した実行の **Re-run all jobs** で再実行できます。
 
 ## ライセンス
 
