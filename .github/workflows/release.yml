@@ -16,14 +16,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Update-signing key is configured
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Signs a throwaway file and checks the signature belongs to the public
+      # key in tauri.conf.json: catches a missing or mis-pasted secret, a wrong
+      # password, or a key that installed apps would reject.
+      - name: Update-signing key works
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: |
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            echo "::error::Secret TAURI_SIGNING_PRIVATE_KEY is not set (Settings > Secrets and variables > Actions). See README: アップデートの公開"
-            exit 1
-          fi
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: node scripts/check-signing-key.mjs
       - name: Tag matches the app version
         if: github.ref_type == 'tag'
         run: node scripts/version.mjs check "${GITHUB_REF_NAME}"
