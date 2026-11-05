@@ -75,13 +75,26 @@ jobs:
 
       - run: npm ci
 
+      # Tauri rejects the key if a newline or space was pasted with it, which
+      # is easy to do when copying it from a terminal. Strip both once here;
+      # the build step reads the cleaned values from the job environment.
+      - name: Prepare update-signing key
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          key="$(printf '%s' "$KEY" | tr -d '[:space:]')"
+          password="$(printf '%s' "$PASSWORD" | tr -d '\r\n')"
+          echo "::add-mask::$key"
+          if [ -n "$password" ]; then echo "::add-mask::$password"; fi
+          echo "TAURI_SIGNING_PRIVATE_KEY=$key" >> "$GITHUB_ENV"
+          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$password" >> "$GITHUB_ENV"
+
       - name: Build & publish
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Update-signing key for the Tauri updater (not OS code signing).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
           releaseName: "LandMs ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}"

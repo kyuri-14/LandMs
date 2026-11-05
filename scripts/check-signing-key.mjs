@@ -39,9 +39,10 @@ const args = process.argv.slice(2);
 const pubkeyArg = args.indexOf("--pubkey");
 const pubkey = pubkeyArg >= 0 ? args[pubkeyArg + 1] : JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8")).plugins.updater.pubkey;
 
-const raw = process.env.TAURI_SIGNING_PRIVATE_KEY ?? "";
-const key = raw.trim();
-const password = process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? "";
+// Cleaned exactly like the release job's "Prepare update-signing key" step,
+// so what passes here is what the build signs with.
+const key = (process.env.TAURI_SIGNING_PRIVATE_KEY ?? "").replace(/\s+/g, "");
+const password = (process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? "").replace(/[\r\n]/g, "");
 
 if (!key) {
   fail(`Secret TAURI_SIGNING_PRIVATE_KEY is not set (${SECRETS_PAGE}).`, "秘密鍵が登録されていません。README の「アップデートの公開」を参照してください。");
@@ -52,7 +53,7 @@ if (/^[A-Z][A-Z0-9_]*\s*[=:]/.test(key) || key.startsWith("TAURI_")) {
     `値の欄に「TAURI_SIGNING_PRIVATE_KEY=」などの名前まで入っています。${SECRETS_PAGE} で編集し、.key ファイルの中身（dW50cnVzdGVk… で始まる文字列）だけを貼り付けてください。`,
   );
 }
-if (!/^[A-Za-z0-9+/=\s]+$/.test(key)) {
+if (!/^[A-Za-z0-9+/=]+$/.test(key)) {
   fail("TAURI_SIGNING_PRIVATE_KEY is not base64.", "値が鍵の形式ではありません。.key ファイルの中身（dW50cnVzdGVk… で始まる1行）だけを貼り付けてください。");
 }
 const text = decode(key);

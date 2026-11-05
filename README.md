@@ -88,7 +88,13 @@ GitHub リポジトリの **Settings → Secrets and variables → Actions → N
 | `TAURI_SIGNING_PRIVATE_KEY` | 更新署名用の秘密鍵ファイル（`.key`）の中身 |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | その鍵のパスワード（パスワードなしの鍵なら登録不要） |
 
-`src-tauri/tauri.conf.json` の `plugins.updater.pubkey` は Foling と同じ公開鍵なので、Foling のリリースに使っている秘密鍵をそのまま登録してください。別の鍵にしたい場合は `npx tauri signer generate -w ~/.tauri/landms.key` で作成し、表示された公開鍵で `pubkey` を置き換えます（秘密鍵は絶対にコミットしないでください）。
+`src-tauri/tauri.conf.json` の `plugins.updater.pubkey` には LandMs 専用の公開鍵（鍵 ID `3D1E14BDC0A49150`）が入っています。対になる秘密鍵 `landms.key` の中身を登録してください。PowerShell なら次の 1 行で秘密鍵がクリップボードにコピーされます（末尾の改行や空白はリリース時に自動で取り除きます）。
+
+```bash
+Get-Content "$HOME\.tauri\landms.key" | Set-Clipboard
+```
+
+鍵を作り直す場合は `npx @tauri-apps/cli signer generate -w "$HOME\.tauri\landms.key"` で作成し、`landms.key.pub` の中身で `pubkey` を置き換えます。秘密鍵とパスワードは失うと以後の版を自動更新できなくなるので、安全な場所に保管してください（秘密鍵は絶対にコミットしないでください）。
 
 ### リリースのたびに
 
