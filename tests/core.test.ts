@@ -3,11 +3,13 @@ import { describe, expect, test } from "vitest";
 import { builtinByName } from "../src/core/builtins";
 import { moduleFileYaml, parseModuleFile, parseSnapshotYaml, snapshotYaml } from "../src/core/foling";
 import { buildFolingHtml, buildHtflTree, htflFiles, substituteVariables } from "../src/core/htfl";
-import { moduleDeclarations, sizingDeclarations } from "../src/core/layout";
+import { DEFAULT_PLACEMENT, frameDeclarations, moduleDeclarations, placementDeclarations, sizingDeclarations } from "../src/core/layout";
+import { parseProject, serializeProject } from "../src/core/projectFile";
+import { createShape, shapeSnapshot } from "../src/core/shapes";
 import { createFrame, createModuleInstance, createRoot, createStarterProject, withModule } from "../src/core/project";
 import { screenForWidth, uncoveredRanges, validateScreens } from "../src/core/screens";
-import { findNode, insertNode, moveNode, removeNode } from "../src/core/tree";
-import type { Project } from "../src/core/types";
+import { findNode, flattenTree, insertNode, moveNode, removeNode } from "../src/core/tree";
+import type { Placement, Project } from "../src/core/types";
 import { buildWeb, dedupeCssBlocks, singleFileHtml, webFiles } from "../src/core/web";
 
 const folingSample = `
@@ -171,5 +173,67 @@ describe("tree edits", () => {
     const extra = createFrame("row");
     expect(findNode(insertNode(root, main.id, 99, extra), extra.id)?.parent?.id).toBe(main.id);
     expect(findNode(removeNode(root, header.id), header.id)).toBeNull();
+  });
+});
+
+describe("free layout and shapes", () => {
+  const place = (overrides: Partial<Placement> = {}): Placement => ({ ...DEFAULT_PLACEMENT, x: 100, y: 40, w: 200, h: 80, pw: 1000, ph: 500, ...overrides });
+  const fixed = (value: number) => ({ mode: "fixed" as const, value });
+  const hug = { mode: "hug" as const, value: 0 };
+
+  test("constraints turn into absolute positions that survive a resized frame", () => {
+    expect(placementDeclarations(place(), fixed(200), fixed(80))).toEqual(["position: absolute;", "left: 100px;", "top: 40px;", "width: 200px;", "height: 80px;"]);
+    expect(placementDeclarations(place({ horizontal: "right", vertical: "bottom" }), fixed(200), fixed(80))).toEqual(["position: absolute;", "right: 700px;", "bottom: 380px;", "width: 200px;", "height: 80px;"]);
+    expect(placementDeclarations(place({ horizontal: "center", vertical: "center", rotation: 15 }), fixed(200), fixed(80))).toEqual([
+      "position: absolute;",
+      "left: calc(50% - 300px);",
+      "top: calc(50% - 170px);",
+      "width: 200px;",
+      "height: 80px;",
+      "transform: translate(-50%, -50%) rotate(15deg);",
+    ]);
+    expect(placementDeclarations(place({ horizontal: "stretch", vertical: "scale" }), fixed(200), fixed(80))).toEqual(["position: absolute;", "left: 100px;", "right: 700px;", "top: 8%;", "height: 16%;"]);
+    expect(placementDeclarations(place({ horizontal: "scale", flipX: true }), hug, hug)).toEqual(["position: absolute;", "left: 10%;", "top: 40px;", "width: 20%;", "transform: scale(-1, 1);"]);
+  });
+
+  test("a free frame is a positioned box, not a flex container", () => {
+    const frame = createFrame("free");
+    const decls = frameDeclarations(frame, "column");
+    expect(decls).toContain("position: relative;");
+    expect(decls).toContain("overflow: hidden;");
+    expect(decls.some((decl) => decl.startsWith("display: flex"))).toBe(false);
+    // Nested in another free frame it is placed absolutely (still a containing block).
+    const nested = frameDeclarations({ ...frame, place: place() }, { mode: "free" });
+    expect(nested).toContain("position: absolute;");
+    expect(nested).not.toContain("position: relative;");
+  });
+
+  test("text keeps line breaks and links wrap the right element", () => {
+    const text = createShape("text", { text: { ...createShape("text").text, content: "Hello\n\nworld" } });
+    const snapshot = shapeSnapshot(text, { mode: "flex", direction: "column" });
+    expect(snapshot.config.classes).toContain("lm-text-lines");
+    expect(snapshot.children.map((child) => child.config.content ?? "")).toEqual(["Hello", "", "world"]);
+    const linked = shapeSnapshot({ ...text, href: "#contact" }, { mode: "flex", direction: "column" });
+    expect(linked.name).toBe("p");
+    expect(linked.children[0].name).toBe("a");
+    expect(linked.children[0].config.attributes?.href).toBe("#contact");
+    const image = shapeSnapshot({ ...createShape("image"), href: "https://example.com" }, { mode: "free" });
+    expect(image.name).toBe("a");
+    expect(image.children[0].name).toBe("img");
+    const pointText = shapeSnapshot(createShape("text"), { mode: "free" });
+    expect(pointText.config.css).toContain("white-space: nowrap;");
+  });
+
+  test("lines are as thick as their stroke", () => {
+    const line = createShape("line", { strokeWidth: 6, height: fixed(40) });
+    expect(shapeSnapshot(line, { mode: "flex", direction: "column" }).config.css).toContain("height: 6px;");
+  });
+
+  test("shapes and placements survive saving and loading", () => {
+    const project = createStarterProject();
+    const loaded = parseProject(serializeProject(project));
+    expect(loaded).toEqual(project);
+    const free = flattenTree(loaded.screens[0].root).find((row) => row.node.kind === "frame" && row.node.layout.mode === "free");
+    expect(free).toBeTruthy();
   });
 });

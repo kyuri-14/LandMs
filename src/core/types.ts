@@ -62,7 +62,17 @@ export type AlignItems = "flex-start" | "center" | "flex-end" | "baseline";
 
 export type FrameTag = "div" | "header" | "nav" | "main" | "section" | "article" | "aside" | "footer";
 
+/**
+ * How a frame arranges its children.
+ * - "flex": in a row/column (CSS flexbox, Figma's auto layout)
+ * - "free": anywhere, positioned with the mouse like Illustrator / InDesign
+ *   (CSS `position: absolute` inside a `position: relative` frame)
+ */
+export type LayoutMode = "flex" | "free";
+
 export type FrameLayout = {
+  /** Missing means "flex" (files written before free layout existed). */
+  mode?: LayoutMode;
   direction: FlexDirection;
   justify: Justify;
   align: AlignItems;
@@ -80,6 +90,37 @@ export type FrameStyle = {
   borderColor: string;
   /** Stick to the top of the viewport while scrolling (typical for headers). */
   sticky: boolean;
+  /** Hide anything that sticks out of the frame (`overflow: hidden`). */
+  clip?: boolean;
+};
+
+// ---------- Free placement ----------
+
+/** What a child keeps fixed when its free frame gets wider (Figma's constraints). */
+export type HConstraint = "left" | "right" | "center" | "stretch" | "scale";
+/** What a child keeps fixed when its free frame gets taller. */
+export type VConstraint = "top" | "bottom" | "center" | "stretch" | "scale";
+
+/**
+ * Position of a child inside a free frame. x/y/w/h describe the layout box
+ * before rotation, in px from the frame's top-left, as it was at the last
+ * edit, when the frame measured pw × ph. The CSS is derived from these
+ * numbers and the constraints, so it stays correct at other frame sizes.
+ */
+export type Placement = {
+  x: number;
+  y: number;
+  /** 0 = not measured yet (e.g. text that sizes itself); the editor fills it in. */
+  w: number;
+  h: number;
+  /** Degrees, clockwise. */
+  rotation: number;
+  flipX: boolean;
+  flipY: boolean;
+  horizontal: HConstraint;
+  vertical: VConstraint;
+  pw: number;
+  ph: number;
 };
 
 export type FrameNode = {
@@ -94,6 +135,8 @@ export type FrameNode = {
   height: AxisSize;
   style: FrameStyle;
   hidden: boolean;
+  /** Set when the parent frame is a free frame. */
+  place?: Placement;
   children: LayoutNode[];
 };
 
@@ -108,9 +151,67 @@ export type ModuleNode = {
   width: AxisSize;
   height: AxisSize;
   hidden: boolean;
+  /** Set when the parent frame is a free frame. */
+  place?: Placement;
 };
 
-export type LayoutNode = FrameNode | ModuleNode;
+// ---------- Shapes ----------
+
+/** Basic drawing objects, like the shape and type tools of Illustrator. */
+export type ShapeKind = "rect" | "ellipse" | "line" | "text" | "image";
+
+export type FontFamily = "inherit" | "sans" | "serif" | "mono" | "rounded";
+
+export type TextSettings = {
+  /** Plain text; line breaks are kept. */
+  content: string;
+  tag: "p" | "h1" | "h2" | "h3" | "span";
+  fontFamily: FontFamily;
+  fontSize: number;
+  fontWeight: number;
+  italic: boolean;
+  underline: boolean;
+  /** Colour, or "inherit" to use the frame's text colour. */
+  color: string;
+  align: "left" | "center" | "right" | "justify";
+  /** Multiple of the font size, e.g. 1.5. */
+  lineHeight: number;
+  /** Tracking in 1/1000 em, as in InDesign / Illustrator. */
+  letterSpacing: number;
+};
+
+export type ImageSettings = {
+  src: string;
+  alt: string;
+  fit: "cover" | "contain" | "fill";
+};
+
+export type ShapeNode = {
+  kind: "shape";
+  id: string;
+  name: string;
+  shape: ShapeKind;
+  width: AxisSize;
+  height: AxisSize;
+  /** Set when the parent frame is a free frame. */
+  place?: Placement;
+  /** Fill colour or "transparent". Text boxes are transparent by default. */
+  fill: string;
+  /** Outline colour (the line colour for lines). */
+  stroke: string;
+  strokeWidth: number;
+  radius: number;
+  /** 0–100 */
+  opacity: number;
+  shadow: "none" | "soft" | "hard";
+  text: TextSettings;
+  image: ImageSettings;
+  /** Makes the whole shape a link when set. */
+  href: string;
+  hidden: boolean;
+};
+
+export type LayoutNode = FrameNode | ModuleNode | ShapeNode;
 
 // ---------- Screens ----------
 

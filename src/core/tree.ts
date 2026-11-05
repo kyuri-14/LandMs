@@ -122,7 +122,7 @@ export function moveNode(root: FrameNode, id: string, parentId: string, index: n
 export function cloneWithNewIds<T extends LayoutNode>(node: T): T {
   const copy = deepClone(node);
   const walk = (current: LayoutNode) => {
-    current.id = newId(current.kind === "frame" ? "f" : "m");
+    current.id = newId(current.kind === "frame" ? "f" : current.kind === "shape" ? "sh" : "m");
     if (current.kind === "frame") current.children.forEach(walk);
   };
   walk(copy);

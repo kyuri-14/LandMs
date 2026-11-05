@@ -30,7 +30,7 @@ type State = {
 };
 
 type Action =
-  | { type: "commit"; update: (project: Project) => Project; key?: string; select?: Selection; screenId?: string }
+  | { type: "commit"; update: (project: Project) => Project; key?: string; select?: Selection; screenId?: string; transient?: boolean }
   | { type: "undo" }
   | { type: "redo" }
   | { type: "load"; project: Project; filePath: string | null; dirty?: boolean }
@@ -53,6 +53,8 @@ function reducer(state: State, action: Action): State {
       if (next === state.project) {
         return action.select ? { ...state, selection: action.select } : state;
       }
+      // Bookkeeping the user did not do (e.g. measured sizes): no undo step, history untouched.
+      if (action.transient) return { ...state, project: next };
       const now = Date.now();
       const merge = !!action.key && action.key === state.mergeKey && now - state.mergeTime < MERGE_WINDOW_MS;
       const past = merge ? state.past : [...state.past, state.project].slice(-HISTORY_LIMIT);
@@ -135,7 +137,7 @@ export function useEditorStore(initial: () => Project) {
   });
 
   const commit = useCallback(
-    (update: (project: Project) => Project, options: { key?: string; select?: Selection; screenId?: string } = {}) =>
+    (update: (project: Project) => Project, options: { key?: string; select?: Selection; screenId?: string; transient?: boolean } = {}) =>
       dispatch({ type: "commit", update, ...options }),
     [],
   );

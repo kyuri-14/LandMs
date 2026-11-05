@@ -11,10 +11,11 @@
 
 import { builtinByName } from "./builtins";
 import { configYaml, moduleFileYaml, resolveTag, VOID_TAGS, yaml } from "./foling";
-import { frameDeclarations, mergeCss, moduleDeclarations } from "./layout";
+import { frameDeclarations, isFree, mergeCss, moduleDeclarations, parentContext, type ParentContext } from "./layout";
 import { screenKeys, screenSwitchCss } from "./screens";
+import { shapeSnapshot } from "./shapes";
 import { deepClone, displayName } from "./tree";
-import type { FlexDirection, FolingModuleDef, FolingNodeConfig, FolingSnapshot, FrameNode, LayoutNode, ModuleNode, OutputFile, Project } from "./types";
+import type { FolingModuleDef, FolingNodeConfig, FolingSnapshot, FrameNode, LayoutNode, ModuleNode, OutputFile, Project, ShapeNode } from "./types";
 
 export const HTFL_RESET_CSS = `/* HTFL default reset (toggle via VIEW > CSS リセット) */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -100,6 +101,11 @@ export function baseCss(project: Project, keys: Record<string, string>, screens 
     ":root { --lm-ink: $colorInk; --lm-paper: $colorPaper; --lm-accent: $colorAccent; }",
     'body { font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", "Noto Sans JP", sans-serif; line-height: 1.6; color: var(--lm-ink); background: var(--lm-paper); -webkit-font-smoothing: antialiased; }',
     ".lm-screen { min-width: 0; }",
+    "/* Shapes drawn on the canvas (rectangles, ellipses, lines, text, images). */",
+    ".lm-shape { box-sizing: border-box; }",
+    ".lm-shape-link { color: inherit; text-decoration: inherit; }",
+    ".lm-text-lines > span { display: block; }",
+    '.lm-text-lines > span:empty::before { content: "\\200b"; }',
   ];
   const switching = screenSwitchCss(screens, keys);
   if (switching) lines.push(switching);
@@ -121,14 +127,19 @@ export function buildHtflTree(project: Project, options: BuildOptions = {}): Htf
     node.children.forEach(rewriteAssets);
   };
 
-  const moduleSnapshot = (module: ModuleNode, parentDirection: FlexDirection): FolingSnapshot | null => {
+  /** Editor only: children of a free frame are moved with the mouse instead of drag & drop. */
+  const markFree = (snapshot: FolingSnapshot, parent: ParentContext | null) => {
+    if (options.annotate && parent?.mode === "free") snapshot.config = withAttributes(snapshot.config, { "data-lm-free": "" });
+  };
+
+  const moduleSnapshot = (module: ModuleNode, parent: ParentContext): FolingSnapshot | null => {
     const def = moduleDefinition(project, module.module);
     if (def && !usedNames.has(def.name)) {
       usedNames.add(def.name);
       used.push(def);
     }
     const snapshot = deepClone(module.snapshot);
-    snapshot.config = { ...snapshot.config, css: mergeCss(snapshot.config.css, moduleDeclarations(module, parentDirection)) || undefined };
+    snapshot.config = { ...snapshot.config, css: mergeCss(snapshot.config.css, moduleDeclarations(module, parent)) || undefined };
     if (options.annotate) {
       const tag = (node: FolingSnapshot, path: number[]) => {
         node.config = withAttributes(node.config, { "data-lm-el": `${module.id}:${path.join(".")}` });
@@ -137,37 +148,50 @@ export function buildHtflTree(project: Project, options: BuildOptions = {}): Htf
       tag(snapshot, []);
       snapshot.config = withAttributes(snapshot.config, { "data-lm-node": module.id, "data-lm-kind": "module" });
     }
+    markFree(snapshot, parent);
     rewriteAssets(snapshot);
     labels.set(snapshot, slug(module.module) || "module");
     ids.set(snapshot, module.id);
     return snapshot;
   };
 
-  const frameSnapshot = (frame: FrameNode, parentDirection: FlexDirection | null, extra: FolingNodeConfig = {}): FolingSnapshot => {
+  const shapeNodeSnapshot = (shape: ShapeNode, parent: ParentContext): FolingSnapshot => {
+    const snapshot = shapeSnapshot(shape, parent, options.annotate);
+    markFree(snapshot, parent);
+    rewriteAssets(snapshot);
+    labels.set(snapshot, shape.shape);
+    ids.set(snapshot, shape.id);
+    return snapshot;
+  };
+
+  const frameSnapshot = (frame: FrameNode, parent: ParentContext | null, extra: FolingNodeConfig = {}): FolingSnapshot => {
+    const context = parentContext(frame);
     const children = frame.children
       .filter((child) => !child.hidden)
-      .map((child) => nodeSnapshot(child, frame.layout.direction))
+      .map((child) => nodeSnapshot(child, context))
       .filter((child): child is FolingSnapshot => child !== null);
     let config: FolingNodeConfig = {
       ...extra,
       ...(frame.anchor.trim() ? { id: frame.anchor.trim() } : {}),
-      css: frameDeclarations(frame, parentDirection).join("\n"),
+      css: frameDeclarations(frame, parent).join("\n"),
     };
     if (options.annotate) {
       config = withAttributes(config, {
         "data-lm-node": frame.id,
         "data-lm-kind": "frame",
+        ...(isFree(frame) ? { "data-lm-layout": "free" } : {}),
         ...(children.length ? {} : { "data-lm-empty": "" }),
       });
     }
     const snapshot: FolingSnapshot = { name: frame.tag, config, children };
+    markFree(snapshot, parent);
     labels.set(snapshot, slug(frame.name) || frame.tag);
     ids.set(snapshot, frame.id);
     return snapshot;
   };
 
-  const nodeSnapshot = (node: LayoutNode, parentDirection: FlexDirection): FolingSnapshot | null =>
-    node.kind === "frame" ? frameSnapshot(node, parentDirection) : moduleSnapshot(node, parentDirection);
+  const nodeSnapshot = (node: LayoutNode, parent: ParentContext): FolingSnapshot | null =>
+    node.kind === "frame" ? frameSnapshot(node, parent) : node.kind === "shape" ? shapeNodeSnapshot(node, parent) : moduleSnapshot(node, parent);
 
   const roots = screens.map((screen) => {
     const snapshot = frameSnapshot({ ...screen.root, tag: "div", anchor: "" }, null, {

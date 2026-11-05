@@ -1,6 +1,6 @@
 [package]
 name = "landms"
-version = "0.3.0"
+version = "0.4.0"
 description = "LandMs — visual layout editor for Foling modules"
 authors = ["LandMs contributors"]
 license = "AGPL-3.0-or-later"

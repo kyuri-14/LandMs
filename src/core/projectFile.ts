@@ -6,8 +6,10 @@
 
 import { builtinByName } from "./builtins";
 import { normalizeSnapshot } from "./foling";
+import { DEFAULT_PLACEMENT } from "./layout";
 import { createRoot } from "./project";
-import type { AxisSize, FrameNode, LayoutNode, Project, Screen } from "./types";
+import { createShape } from "./shapes";
+import type { AxisSize, FrameNode, LayoutNode, Placement, Project, Screen, ShapeKind, ShapeNode } from "./types";
 
 export const PROJECT_EXTENSION = "landms";
 
@@ -22,12 +24,80 @@ function size(value: unknown, fallback: AxisSize): AxisSize {
   return { mode, value: typeof raw.value === "number" && Number.isFinite(raw.value) ? raw.value : fallback.value };
 }
 
+function finite(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+function placement(value: unknown): Placement | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const d = DEFAULT_PLACEMENT;
+  return {
+    x: finite(raw.x, d.x),
+    y: finite(raw.y, d.y),
+    w: Math.max(0, finite(raw.w, d.w)),
+    h: Math.max(0, finite(raw.h, d.h)),
+    rotation: finite(raw.rotation, 0),
+    flipX: raw.flipX === true,
+    flipY: raw.flipY === true,
+    horizontal: oneOf(raw.horizontal, ["left", "right", "center", "stretch", "scale"] as const, "left"),
+    vertical: oneOf(raw.vertical, ["top", "bottom", "center", "stretch", "scale"] as const, "top"),
+    pw: Math.max(0, finite(raw.pw, 0)),
+    ph: Math.max(0, finite(raw.ph, 0)),
+  };
+}
+
+/** `{ place }` only when the file has one, so absent stays absent. */
+function withPlacement(value: unknown): { place?: Placement } {
+  const place = placement(value);
+  return place ? { place } : {};
+}
+
+function shape(raw: Record<string, unknown>, id: string, name: string, hidden: boolean): ShapeNode {
+  const kind = oneOf(raw.shape, ["rect", "ellipse", "line", "text", "image"] as const, "rect") as ShapeKind;
+  const base = createShape(kind, { id });
+  const text = { ...base.text, ...((raw.text as object) ?? {}) } as ShapeNode["text"];
+  const image = { ...base.image, ...((raw.image as object) ?? {}) } as ShapeNode["image"];
+  return {
+    ...base,
+    name: name || base.name,
+    width: size(raw.width, base.width),
+    height: size(raw.height, base.height),
+    ...withPlacement(raw.place),
+    fill: typeof raw.fill === "string" ? raw.fill : base.fill,
+    stroke: typeof raw.stroke === "string" ? raw.stroke : base.stroke,
+    strokeWidth: Math.max(0, finite(raw.strokeWidth, base.strokeWidth)),
+    radius: Math.max(0, finite(raw.radius, base.radius)),
+    opacity: Math.min(100, Math.max(0, finite(raw.opacity, base.opacity))),
+    shadow: oneOf(raw.shadow, ["none", "soft", "hard"] as const, "none"),
+    text: {
+      ...text,
+      content: typeof text.content === "string" ? text.content : base.text.content,
+      tag: oneOf(text.tag, ["p", "h1", "h2", "h3", "span"] as const, "p"),
+      fontFamily: oneOf(text.fontFamily, ["inherit", "sans", "serif", "mono", "rounded"] as const, "inherit"),
+      fontSize: Math.max(1, finite(text.fontSize, base.text.fontSize)),
+      fontWeight: finite(text.fontWeight, base.text.fontWeight),
+      align: oneOf(text.align, ["left", "center", "right", "justify"] as const, "left"),
+      lineHeight: finite(text.lineHeight, base.text.lineHeight),
+      letterSpacing: finite(text.letterSpacing, 0),
+    },
+    image: { ...image, src: typeof image.src === "string" ? image.src : base.image.src, fit: oneOf(image.fit, ["cover", "contain", "fill"] as const, "cover") },
+    href: typeof raw.href === "string" ? raw.href : "",
+    hidden,
+  };
+}
+
 function node(value: unknown, where: string): LayoutNode {
   if (!value || typeof value !== "object") throw new Error(`${where}: 要素が不正です。`);
   const raw = value as Record<string, unknown>;
   const id = typeof raw.id === "string" && raw.id ? raw.id : `${where}`;
   const name = typeof raw.name === "string" ? raw.name : "";
   const hidden = raw.hidden === true;
+  if (raw.kind === "shape") return shape(raw, id, name, hidden);
   if (raw.kind === "module") {
     if (typeof raw.module !== "string") throw new Error(`${where}: モジュール名がありません。`);
     return {
@@ -39,6 +109,7 @@ function node(value: unknown, where: string): LayoutNode {
       width: size(raw.width, { mode: "fill", value: 0 }),
       height: size(raw.height, { mode: "hug", value: 0 }),
       hidden,
+      ...withPlacement(raw.place),
     };
   }
   return frame(raw, where);
@@ -48,6 +119,9 @@ function frame(raw: Record<string, unknown>, where: string): FrameNode {
   const base = createRoot();
   const layout = { ...base.layout, ...((raw.layout as object) ?? {}) } as FrameNode["layout"];
   if (!Array.isArray(layout.padding) || layout.padding.length !== 4) layout.padding = [0, 0, 0, 0];
+  // Absent means flex; keep files minimal and round trips exact.
+  if (layout.mode === "free") layout.mode = "free";
+  else delete layout.mode;
   const children = Array.isArray(raw.children) ? raw.children.map((child, index) => node(child, `${where}.${index + 1}`)) : [];
   return {
     ...base,
@@ -60,6 +134,7 @@ function frame(raw: Record<string, unknown>, where: string): FrameNode {
     height: size(raw.height, { mode: "hug", value: 0 }),
     style: { ...base.style, ...((raw.style as object) ?? {}) },
     hidden: raw.hidden === true,
+    ...withPlacement(raw.place),
     children,
   };
 }

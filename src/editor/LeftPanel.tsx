@@ -9,6 +9,7 @@ import {
   Box,
   ChevronDown,
   ChevronRight,
+  Circle,
   CircleHelp,
   Columns3,
   Copyright,
@@ -33,18 +34,23 @@ import {
   Rows3,
   Search,
   Share2,
+  Slash,
   Sparkles,
+  Square,
   TextCursorInput,
   Trash2,
   Type,
   WrapText,
+  Move,
 } from "lucide-react";
 import { useMemo, useState, type MutableRefObject } from "react";
 import { builtinModules, categoryLabels, type ModuleCategory } from "../core/builtins";
 import { countElements } from "../core/foling";
+import { isFree } from "../core/layout";
 import { framePresets, type FramePreset } from "../core/project";
+import { shapeLabels } from "../core/shapes";
 import { findNode, isDescendant } from "../core/tree";
-import type { FrameNode, LayoutNode, Project, Screen } from "../core/types";
+import type { FrameNode, LayoutNode, Project, Screen, ShapeKind } from "../core/types";
 import type { DragPayload, DropTarget } from "./Canvas";
 import type { Selection } from "./store";
 
@@ -75,6 +81,23 @@ const frameIcons: Record<FramePreset, typeof Box> = {
   section: Frame,
   footer: PanelBottom,
   grid: WrapText,
+  free: Move,
+};
+
+export const shapeIcons: Record<ShapeKind, typeof Box> = {
+  rect: Square,
+  ellipse: Circle,
+  line: Slash,
+  text: Type,
+  image: ImageIcon,
+};
+
+const shapeDescriptions: Record<ShapeKind, string> = {
+  rect: "塗り・線・角丸",
+  ellipse: "円・楕円",
+  line: "線の太さと角度",
+  text: "自由な位置の文字",
+  image: "写真・イラスト",
 };
 
 type LibraryProps = {
@@ -82,6 +105,7 @@ type LibraryProps = {
   drag: MutableRefObject<DragPayload | null>;
   onAddModule: (name: string) => void;
   onAddFrame: (preset: FramePreset) => void;
+  onAddShape: (kind: ShapeKind) => void;
   onImport: () => void;
   onRemoveImported: (name: string) => void;
 };
@@ -92,7 +116,7 @@ function startDrag(event: React.DragEvent, drag: MutableRefObject<DragPayload | 
   event.dataTransfer.effectAllowed = "copyMove";
 }
 
-export function Library({ project, drag, onAddModule, onAddFrame, onImport, onRemoveImported }: LibraryProps) {
+export function Library({ project, drag, onAddModule, onAddFrame, onAddShape, onImport, onRemoveImported }: LibraryProps) {
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
   const matches = (text: string) => !q || text.toLowerCase().includes(q);
@@ -130,6 +154,35 @@ export function Library({ project, drag, onAddModule, onAddFrame, onImport, onRe
                 </span>
                 <strong>{preset.label}</strong>
                 <small>{preset.description}</small>
+              </button>
+            );
+          })}
+      </div>
+
+      <h3 className="library-heading">
+        <span>図形・文字</span>
+        <small>ツールでも描けます</small>
+      </h3>
+      <div className="module-grid">
+        {(Object.keys(shapeLabels) as ShapeKind[])
+          .filter((kind) => matches(`${shapeLabels[kind]}${shapeDescriptions[kind]}`))
+          .map((kind) => {
+            const Icon = shapeIcons[kind];
+            return (
+              <button
+                key={kind}
+                className="module-card shape-card"
+                draggable={kind !== "image"}
+                onDragStart={(event) => startDrag(event, drag, { kind: "shape", shape: kind })}
+                onDragEnd={() => (drag.current = null)}
+                onClick={() => onAddShape(kind)}
+                title={shapeDescriptions[kind]}
+              >
+                <span className="module-icon">
+                  <Icon size={17} strokeWidth={1.6} />
+                </span>
+                <strong>{shapeLabels[kind]}</strong>
+                <small>{shapeDescriptions[kind]}</small>
               </button>
             );
           })}
@@ -243,7 +296,15 @@ export function Layers({ screen, selection, drag, onSelect, onToggleHidden, onRe
     const isRoot = node.id === screen.root.id;
     const isFrame = node.kind === "frame";
     const open = isFrame && (!collapsed.has(node.id) || ancestors.has(node.id));
-    const Icon = isFrame ? ((node as FrameNode).layout.direction.startsWith("row") ? ArrowRightToLine : ArrowDownToLine) : Box;
+    const Icon = isFrame
+      ? isFree(node as FrameNode)
+        ? Move
+        : (node as FrameNode).layout.direction.startsWith("row")
+          ? ArrowRightToLine
+          : ArrowDownToLine
+      : node.kind === "shape"
+        ? shapeIcons[node.shape]
+        : Box;
     const hintClass = hint?.id === node.id ? `drop-${hint.position}` : "";
     return (
       <div key={node.id} className="layer-group">
@@ -320,7 +381,7 @@ export function Layers({ screen, selection, drag, onSelect, onToggleHidden, onRe
           ) : (
             <span className="layer-name">{node.name}</span>
           )}
-          {node.kind === "frame" && <small className="layer-tag">{isRoot ? `${screen.canvasWidth}px` : node.tag}</small>}
+          {node.kind === "frame" && <small className="layer-tag">{isRoot ? `${screen.canvasWidth}px` : isFree(node) ? "自由" : node.tag}</small>}
           {!isRoot && (
             <button
               className="layer-eye"

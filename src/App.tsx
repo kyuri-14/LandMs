@@ -6,19 +6,26 @@ import {
   Bell,
   Braces,
   ChevronDown,
+  Circle,
   Code2,
   Eye,
   FilePlus2,
   FolderOpen,
+  Frame,
+  ImagePlus,
   Layers3,
   Maximize,
+  MousePointer2,
   Pencil,
   Plus,
   Redo2,
   Save,
   Settings2,
   Shapes,
+  Slash,
+  Square,
   TriangleAlert,
+  Type,
   Undo2,
   Upload,
   X,
@@ -29,18 +36,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { builtinByName } from "./core/builtins";
 import { moduleFileYaml, parseModuleFile } from "./core/foling";
 import { buildFolingHtml, buildHtflTree, htflFiles, moduleDefinition } from "./core/htfl";
+import { isFree } from "./core/layout";
 import { createBlankProject, createFrame, createModuleInstance, createRoot, createStarterProject, withModule, type FramePreset } from "./core/project";
 import { parseProject, serializeProject } from "./core/projectFile";
 import { describeCondition, validateScreens } from "./core/screens";
-import { cloneWithNewIds, findNode, insertNode, mapNode, moveNode, newId, removeNode, updateRoot } from "./core/tree";
-import type { FolingModuleDef, LayoutNode, ModuleNode, Project, Screen } from "./core/types";
+import { createShape } from "./core/shapes";
+import { cloneWithNewIds, findNode, insertNode, mapNode, mapSnapshot, moveNode, newId, removeNode, updateRoot } from "./core/tree";
+import type { FolingModuleDef, LayoutMode, LayoutNode, ModuleNode, Project, Screen, ShapeKind } from "./core/types";
 import { buildWeb, singleFileHtml, webFiles } from "./core/web";
-import { Canvas, type DragPayload, type DropTarget } from "./editor/Canvas";
+import { Canvas, type CanvasHandle, type CreateRequest, type DragPayload, type DropTarget, type TextEdit, type Tool, type TransformCommit } from "./editor/Canvas";
 import { CodeDialog, FolingDialog, ScreenDialog, ScreenIcon, SettingsDialog, UpdateDialog, type CodeTab, type UpdateState } from "./editor/Dialogs";
 import { Inspector } from "./editor/Inspector";
 import { Layers, Library } from "./editor/LeftPanel";
+import { setContent } from "./editor/moduleFields";
+import { fitNode, frameToFlex, frameToFree, orderIndex, type FitOptions, type OrderMove } from "./editor/placementOps";
 import { Preview } from "./editor/Preview";
 import { useEditorStore } from "./editor/store";
+import { alignPlacement } from "./editor/transform";
 import {
   appVersion,
   checkForUpdate,
@@ -83,10 +95,41 @@ function safeFileName(name: string): string {
 
 type Toast = { id: number; message: string; tone: "info" | "error"; action?: { label: string; run: () => void } };
 
+const tools: Array<{ tool: Tool; label: string; key: string; icon: typeof Square }> = [
+  { tool: "select", label: "選択・移動", key: "V", icon: MousePointer2 },
+  { tool: "frame", label: "自由配置フレーム", key: "F", icon: Frame },
+  { tool: "rect", label: "長方形", key: "R", icon: Square },
+  { tool: "ellipse", label: "楕円", key: "O", icon: Circle },
+  { tool: "line", label: "線", key: "L", icon: Slash },
+  { tool: "text", label: "テキスト", key: "T", icon: Type },
+  { tool: "image", label: "画像", key: "I", icon: ImagePlus },
+];
+
+const toolKeys: Record<string, Tool> = { v: "select", f: "frame", r: "rect", m: "rect", o: "ellipse", l: "line", t: "text", i: "image" };
+
+/** Natural size of an image (data URL), scaled down to at most `max` px wide. */
+function imageSize(src: string, max: number): Promise<{ w: number; h: number }> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      const w = image.naturalWidth || 320;
+      const h = image.naturalHeight || 200;
+      const scale = Math.min(1, max / w);
+      resolve({ w: Math.round(w * scale), h: Math.round(h * scale) });
+    };
+    image.onerror = () => resolve({ w: 320, h: 200 });
+    image.src = src;
+  });
+}
+
 export default function App() {
   const store = useEditorStore(loadInitialProject);
   const { project, screen, selection, commit, select } = store;
   const drag = useRef<DragPayload | null>(null);
+  const canvasRef = useRef<CanvasHandle>(null);
+  const [tool, setTool] = useState<Tool>("select");
+  const [editRequest, setEditRequest] = useState<{ id: string; path: number[] | null } | null>(null);
+  const hintedFlexDraw = useRef(false);
   const clipboard = useRef<{ node: LayoutNode; defs: FolingModuleDef[] } | null>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
 
@@ -173,36 +216,259 @@ export default function App() {
     const root = screen.root;
     const location = selection.id ? findNode(root, selection.id) : null;
     if (location?.node.kind === "frame" && location.node.id !== root.id) return { parentId: location.node.id, index: location.node.children.length };
-    if (location?.node.kind === "module" && location.parent) return { parentId: location.parent.id, index: location.index + 1 };
+    if (location && location.node.kind !== "frame" && location.parent) return { parentId: location.parent.id, index: location.index + 1 };
     const main = root.children.find((child) => child.kind === "frame" && child.tag === "main");
     return main ? { parentId: main.id, index: (main as typeof root).children.length } : { parentId: root.id, index: root.children.length };
   }, [screen.root, selection.id]);
 
+  /** Inner size of a free frame on the canvas (for placements made without a pointer). */
+  const frameSizeOf = useCallback((frameId: string) => canvasRef.current?.measureFrame(frameId)?.frame, []);
+
+  /** Insert a new node; in a free frame it gets a placement (at the drop point, or centred). */
   const insertAt = useCallback(
-    (target: DropTarget, node: LayoutNode, def?: FolingModuleDef) => {
-      commit((current) => updateRoot(def ? withModule(current, def) : current, screen.id, (root) => insertNode(root, target.parentId, target.index, node)), { select: { id: node.id, path: null } });
+    (target: DropTarget, node: LayoutNode, def?: FolingModuleDef, fit: FitOptions = {}) => {
+      const parent = findNode(screen.root, target.parentId)?.node;
+      const ready =
+        parent?.kind === "frame"
+          ? fitNode(node, parent, { frame: target.frame ?? (isFree(parent) ? frameSizeOf(parent.id) : undefined), point: target.point, ...fit })
+          : node;
+      commit((current) => updateRoot(def ? withModule(current, def) : current, screen.id, (root) => insertNode(root, target.parentId, target.index, ready)), {
+        select: { id: ready.id, path: null },
+      });
+      return ready;
     },
-    [commit, screen.id],
+    [commit, frameSizeOf, screen.id, screen.root],
   );
 
   const addModule = useCallback(
     (name: string, target = defaultTarget()) => {
       const def = moduleDefinition(project, name);
       if (!def) return showError(`モジュール「${name}」が見つかりません。`);
-      insertAt(target, createModuleInstance(def), def);
+      // Dropped modules are placed by their corner: their size is only known once drawn.
+      insertAt(target, createModuleInstance(def), def, { anchor: "corner" });
     },
     [defaultTarget, insertAt, project, showError],
   );
 
   const addFrame = useCallback((preset: FramePreset, target = defaultTarget()) => insertAt(target, createFrame(preset)), [defaultTarget, insertAt]);
 
+  // ---------- assets ----------
+
+  const addImage = useCallback(async (): Promise<{ src: string; name: string; dataUrl: string } | null> => {
+    try {
+      const picked = await pickImage();
+      if (!picked) return null;
+      const used = new Set(Object.values(project.assets).map((asset) => asset.name));
+      const dot = picked.name.lastIndexOf(".");
+      const base = (dot > 0 ? picked.name.slice(0, dot) : picked.name).normalize("NFKC").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "image";
+      const extension = dot > 0 ? picked.name.slice(dot + 1).toLowerCase() : "png";
+      let name = `${base}.${extension}`;
+      for (let n = 2; used.has(name); n += 1) name = `${base}-${n}.${extension}`;
+      const id = newId("a");
+      commit((current) => ({ ...current, assets: { ...current.assets, [id]: { id, name, mime: picked.mime, data: picked.data } } }));
+      return { src: `images/${name}`, name: dot > 0 ? picked.name.slice(0, dot) : picked.name, dataUrl: `data:${picked.mime};base64,${picked.data}` };
+    } catch (error) {
+      showError(error instanceof Error ? error.message : String(error));
+      return null;
+    }
+  }, [commit, project.assets, showError]);
+
+  /** An image shape from a picked file, at its natural proportions. */
+  const imageShape = useCallback(
+    async (box: { w: number; h: number } | null) => {
+      const picked = await addImage();
+      if (!picked) return null;
+      const natural = box && box.w > 8 && box.h > 8 ? box : null;
+      return { picked, natural };
+    },
+    [addImage],
+  );
+
+  const addShape = useCallback(
+    async (kind: ShapeKind, target = defaultTarget()) => {
+      if (kind === "image") {
+        const result = await imageShape(null);
+        if (!result) return;
+        const dims = await imageSize(result.picked.dataUrl, 480);
+        insertAt(
+          target,
+          createShape("image", {
+            name: result.picked.name,
+            image: { src: result.picked.src, alt: result.picked.name, fit: "cover" },
+            width: { mode: "fixed", value: dims.w },
+            height: { mode: "fixed", value: dims.h },
+          }),
+        );
+        return;
+      }
+      const node = insertAt(target, createShape(kind));
+      if (kind === "text") setEditRequest({ id: node.id, path: null });
+    },
+    [defaultTarget, imageShape, insertAt],
+  );
+
   const handleDrop = useCallback(
     (target: DropTarget, payload: DragPayload) => {
       if (payload.kind === "module") addModule(payload.name, target);
       else if (payload.kind === "frame") addFrame(payload.preset as FramePreset, target);
-      else commit((current) => updateRoot(current, screen.id, (root) => moveNode(root, payload.id, target.parentId, target.index)), { select: { id: payload.id, path: null } });
+      else if (payload.kind === "shape") void addShape(payload.shape, target);
+      else {
+        const parent = findNode(screen.root, target.parentId)?.node;
+        commit(
+          (current) =>
+            updateRoot(current, screen.id, (root) => {
+              const moved = moveNode(root, payload.id, target.parentId, target.index);
+              if (parent?.kind !== "frame") return moved;
+              return mapNode(moved, payload.id, (node) => fitNode(node, parent, { frame: target.frame ?? (isFree(parent) ? frameSizeOf(parent.id) : undefined), point: target.point, size: target.size }));
+            }),
+          { select: { id: payload.id, path: null } },
+        );
+      }
     },
-    [addFrame, addModule, commit, screen.id],
+    [addFrame, addModule, addShape, commit, frameSizeOf, screen.id, screen.root],
+  );
+
+  // ---------- drawing tools ----------
+
+  const handleCreate = useCallback(
+    async ({ tool: drawTool, target, box }: CreateRequest) => {
+      setTool("select");
+      const parent = findNode(screen.root, target.parentId)?.node;
+      if (!parent || parent.kind !== "frame") return;
+      const free = isFree(parent);
+      if (!free && !hintedFlexDraw.current) {
+        hintedFlexDraw.current = true;
+        showToast("整列（flex）フレームなので、並びの中に追加しました。描いた位置に置くには「自由配置」フレームの中に描いてください（フレームの設定で切り替えられます）。");
+      }
+      const size = (w: number, h: number) => ({ width: { mode: "fixed" as const, value: Math.max(4, Math.round(w)) }, height: { mode: "fixed" as const, value: Math.max(4, Math.round(h)) } });
+      const fit: FitOptions = free && box ? { box } : {};
+      if (drawTool === "frame") {
+        const frame = createFrame("free", box ? size(box.w, box.h) : free ? size(480, 320) : {});
+        insertAt(target, frame, undefined, fit);
+        return;
+      }
+      if (drawTool === "image") {
+        const result = await imageShape(box);
+        if (!result) return;
+        // The asset was added a moment ago, so read the size from the picked data, not from `project`.
+        const dims = result.natural ?? (await imageSize(result.picked.dataUrl, free ? Math.min(480, (target.frame?.w ?? 960) * 0.6) : 480));
+        const shape = createShape("image", { name: result.picked.name, image: { src: result.picked.src, alt: result.picked.name, fit: "cover" }, ...size(dims.w, dims.h) });
+        insertAt(target, shape, undefined, free && box ? { box: { ...box, w: dims.w, h: dims.h } } : {});
+        return;
+      }
+      if (drawTool === "text") {
+        const text = createShape("text", box ? { width: { mode: "fixed", value: Math.max(40, Math.round(box.w)) } } : {});
+        const point = target.point ? { x: target.point.x, y: target.point.y - (text.text.fontSize * text.text.lineHeight) / 2 } : undefined;
+        const node = insertAt({ ...target, point }, text, undefined, free && box ? { box: { ...box, h: 0 } } : { anchor: "corner" });
+        setEditRequest({ id: node.id, path: null });
+        return;
+      }
+      if (drawTool === "line") {
+        const line = createShape("line", box ? { width: { mode: "fixed", value: Math.max(4, Math.round(box.w)) } } : {});
+        insertAt(target, line, undefined, free && box ? { box: { ...box, h: line.strokeWidth } } : {});
+        return;
+      }
+      insertAt(target, createShape(drawTool, box ? size(box.w, box.h) : {}), undefined, fit);
+    },
+    [imageShape, insertAt, screen.root, showToast],
+  );
+
+  const handleTransform = useCallback(
+    ({ id, place, width, height, reparent }: TransformCommit) => {
+      if (reparent) {
+        const parent = findNode(screen.root, reparent.parentId)?.node;
+        commit(
+          (current) =>
+            updateRoot(current, screen.id, (root) => {
+              const moved = moveNode(root, id, reparent.parentId, reparent.index);
+              if (parent?.kind !== "frame") return moved;
+              return mapNode(moved, id, (node) => fitNode(node, parent, { frame: reparent.frame, point: reparent.point, size: reparent.size, anchor: "corner" }));
+            }),
+          { select: { id, path: null } },
+        );
+        return;
+      }
+      updateNode(id, (node) => ({ ...node, ...(place ? { place } : {}), ...(width ? { width } : {}), ...(height ? { height } : {}) }));
+    },
+    [commit, screen.id, screen.root, updateNode],
+  );
+
+  const handleEditText = useCallback(
+    ({ id, path, text }: TextEdit) => {
+      const node = findNode(screen.root, id)?.node;
+      if (!node) return;
+      if (node.kind === "module" && path) {
+        updateNode(id, (current) => ({ ...(current as ModuleNode), snapshot: mapSnapshot((current as ModuleNode).snapshot, path, (target) => setContent(target, text)) }));
+        return;
+      }
+      if (node.kind === "shape" && node.shape === "text") {
+        // An emptied text box is removed, like in Illustrator and Figma.
+        if (!text.trim()) {
+          commit((current) => updateRoot(current, screen.id, (root) => removeNode(root, id)), { select: { id: null, path: null } });
+          return;
+        }
+        updateNode(id, (current) => (current.kind === "shape" ? { ...current, text: { ...current.text, content: text } } : current));
+      }
+    },
+    [commit, screen.id, screen.root, updateNode],
+  );
+
+  const handleSettle = useCallback(
+    (updates: Array<{ id: string; place: NonNullable<LayoutNode["place"]> }>) =>
+      commit(
+        (current) => updateRoot(current, screen.id, (root) => updates.reduce((tree, update) => mapNode(tree, update.id, (node) => ({ ...node, place: update.place })), root)),
+        { transient: true },
+      ),
+    [commit, screen.id],
+  );
+
+  /** Switch a frame between flex and free layout without moving anything on screen. */
+  const setFrameMode = useCallback(
+    (frameId: string, layoutMode: LayoutMode) => {
+      if (layoutMode === "free") {
+        const measurement = canvasRef.current?.measureFrame(frameId);
+        if (!measurement) return showError("キャンバスで位置を測れませんでした。もう一度お試しください。");
+        updateNode(frameId, (node) => (node.kind === "frame" ? frameToFree(node, measurement) : node));
+      } else {
+        updateNode(frameId, (node) => (node.kind === "frame" ? frameToFlex(node) : node));
+      }
+    },
+    [showError, updateNode],
+  );
+
+  const reorderSelected = useCallback(
+    (move: OrderMove) => {
+      const id = selection.id;
+      const location = id ? findNode(screen.root, id) : null;
+      if (!id || !location?.parent) return;
+      const index = orderIndex(location.index, location.parent.children.length, move);
+      if (index === null) return;
+      const parentId = location.parent.id;
+      commit((current) => updateRoot(current, screen.id, (root) => moveNode(root, id, parentId, index)));
+    },
+    [commit, screen.id, screen.root, selection.id],
+  );
+
+  const alignSelected = useCallback(
+    (edge: Parameters<typeof alignPlacement>[1]) => {
+      const id = selection.id;
+      const node = id ? findNode(screen.root, id)?.node : null;
+      if (!id || !node?.place) return;
+      updateNode(id, (current) => (current.place ? { ...current, place: alignPlacement(current.place, edge) } : current));
+    },
+    [screen.root, selection.id, updateNode],
+  );
+
+  /** Arrow keys: move a freely placed element by 1 px (10 px with Shift). */
+  const nudgeSelected = useCallback(
+    (dx: number, dy: number) => {
+      const id = selection.id;
+      const node = id ? findNode(screen.root, id)?.node : null;
+      if (!id || !node?.place) return false;
+      updateNode(id, (current) => (current.place ? { ...current, place: { ...current.place, x: current.place.x + dx, y: current.place.y + dy } } : current), `nudge-${id}`);
+      return true;
+    },
+    [screen.root, selection.id, updateNode],
   );
 
   const deleteSelected = useCallback(() => {
@@ -222,7 +488,9 @@ export default function App() {
     if (!location?.parent) return;
     const copy = cloneWithNewIds(location.node);
     copy.name = `${location.node.name} のコピー`;
-    insertAt({ parentId: location.parent.id, index: location.index + 1 }, copy);
+    // In a free frame the copy is offset so it does not hide exactly behind the original.
+    if (copy.place) copy.place = { ...copy.place, x: copy.place.x + 16, y: copy.place.y + 16 };
+    insertAt({ parentId: location.parent.id, index: location.index + 1 }, copy, undefined, copy.place ? { box: { x: copy.place.x, y: copy.place.y, w: copy.place.w, h: copy.place.h, rotation: copy.place.rotation } } : {});
   }, [insertAt, screen.root, selection.id]);
 
   const usedDefs = useCallback(
@@ -232,7 +500,7 @@ export default function App() {
         if (current.kind === "module") {
           const def = moduleDefinition(project, current.module);
           if (def) defs.push(def);
-        } else current.children.forEach(walk);
+        } else if (current.kind === "frame") current.children.forEach(walk);
       };
       walk(node);
       return defs;
@@ -251,8 +519,15 @@ export default function App() {
   const paste = useCallback(() => {
     const entry = clipboard.current;
     if (!entry) return;
-    const node = cloneWithNewIds(entry.node);
     const target = defaultTarget();
+    const parent = findNode(screen.root, target.parentId)?.node;
+    const copy = cloneWithNewIds(entry.node);
+    // Into a free frame: keep the copied position, nudged so it is visible; elsewhere fitNode lays it out.
+    const fit: FitOptions =
+      copy.place && parent?.kind === "frame" && isFree(parent)
+        ? { box: { x: copy.place.x + 16, y: copy.place.y + 16, w: copy.place.w, h: copy.place.h, rotation: copy.place.rotation } }
+        : {};
+    const node = parent?.kind === "frame" ? fitNode(copy, parent, { frame: isFree(parent) ? frameSizeOf(parent.id) : undefined, ...fit }) : copy;
     commit(
       (current) => {
         let next = current;
@@ -261,34 +536,13 @@ export default function App() {
       },
       { select: { id: node.id, path: null } },
     );
-  }, [commit, defaultTarget, screen.id]);
+  }, [commit, defaultTarget, frameSizeOf, screen.id, screen.root]);
 
   const selectParent = useCallback(() => {
     if (selection.path?.length) return select(selection.id, null);
     const location = selection.id ? findNode(screen.root, selection.id) : null;
     if (location?.parent) select(location.parent.id);
   }, [screen.root, select, selection.id, selection.path]);
-
-  // ---------- assets ----------
-
-  const addImage = useCallback(async (): Promise<string | null> => {
-    try {
-      const picked = await pickImage();
-      if (!picked) return null;
-      const used = new Set(Object.values(project.assets).map((asset) => asset.name));
-      const dot = picked.name.lastIndexOf(".");
-      const base = (dot > 0 ? picked.name.slice(0, dot) : picked.name).normalize("NFKC").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "image";
-      const extension = dot > 0 ? picked.name.slice(dot + 1).toLowerCase() : "png";
-      let name = `${base}.${extension}`;
-      for (let n = 2; used.has(name); n += 1) name = `${base}-${n}.${extension}`;
-      const id = newId("a");
-      commit((current) => ({ ...current, assets: { ...current.assets, [id]: { id, name, mime: picked.mime, data: picked.data } } }));
-      return `images/${name}`;
-    } catch (error) {
-      showError(error instanceof Error ? error.message : String(error));
-      return null;
-    }
-  }, [commit, project.assets, showError]);
 
   // ---------- Foling modules ----------
 
@@ -554,13 +808,28 @@ export default function App() {
           event.preventDefault();
           deleteSelected();
         }
+      } else if (mod && (event.key === "]" || event.key === "}")) {
+        event.preventDefault();
+        reorderSelected(event.shiftKey ? "front" : "forward");
+      } else if (mod && (event.key === "[" || event.key === "{")) {
+        event.preventDefault();
+        reorderSelected(event.shiftKey ? "back" : "backward");
+      } else if (key.startsWith("arrow") && !mod && mode === "design") {
+        const step = event.shiftKey ? 10 : 1;
+        const dx = key === "arrowleft" ? -step : key === "arrowright" ? step : 0;
+        const dy = key === "arrowup" ? -step : key === "arrowdown" ? step : 0;
+        if (nudgeSelected(dx, dy)) event.preventDefault();
       } else if (key === "escape") {
-        selectParent();
+        if (tool !== "select") setTool("select");
+        else selectParent();
       } else if (key === "p" && !mod && !event.altKey && !event.shiftKey) {
         setMode((value) => (value === "design" ? "preview" : "design"));
+      } else if (!mod && !event.altKey && toolKeys[key] && mode === "design") {
+        event.preventDefault();
+        setTool(toolKeys[key]);
       }
     },
-    [changeZoom, copySelected, deleteSelected, duplicateSelected, fitZoom, mode, open, paste, save, selectParent, store],
+    [changeZoom, copySelected, deleteSelected, duplicateSelected, fitZoom, mode, nudgeSelected, open, paste, reorderSelected, save, selectParent, store, tool],
   );
 
   useEffect(() => {
@@ -652,7 +921,15 @@ export default function App() {
           </div>
           <div className="panel-scroll">
             {panel === "library" ? (
-              <Library project={project} drag={drag} onAddModule={(name) => addModule(name)} onAddFrame={(preset) => addFrame(preset)} onImport={() => setFolingOpen(true)} onRemoveImported={removeImported} />
+              <Library
+                project={project}
+                drag={drag}
+                onAddModule={(name) => addModule(name)}
+                onAddFrame={(preset) => addFrame(preset)}
+                onAddShape={(kind) => void addShape(kind)}
+                onImport={() => setFolingOpen(true)}
+                onRemoveImported={removeImported}
+              />
             ) : (
               <Layers
                 screen={screen}
@@ -709,7 +986,36 @@ export default function App() {
                   {screen.canvasWidth}px · {describeCondition(screen)}
                 </small>
               </div>
-              <Canvas project={project} screen={screen} zoom={zoom} selection={selection} drag={drag} onSelect={(id, path) => select(id, path ?? null)} onDrop={handleDrop} onKeyDown={handleKey} onZoom={changeZoom} />
+              <Canvas
+                ref={canvasRef}
+                project={project}
+                screen={screen}
+                zoom={zoom}
+                selection={selection}
+                drag={drag}
+                tool={tool}
+                editRequest={editRequest}
+                onEditRequestHandled={() => setEditRequest(null)}
+                onSelect={(id, path) => select(id, path ?? null)}
+                onDrop={handleDrop}
+                onCreate={(request) => void handleCreate(request)}
+                onTransform={handleTransform}
+                onEditText={handleEditText}
+                onSettle={handleSettle}
+                onKeyDown={handleKey}
+                onZoom={changeZoom}
+              />
+            </div>
+            <div className="tool-palette" role="toolbar" aria-label="ツール">
+              {tools.map((entry) => {
+                const Icon = entry.icon;
+                return (
+                  <button key={entry.tool} className={tool === entry.tool ? "active" : ""} onClick={() => setTool(entry.tool)} title={`${entry.label}（${entry.key}）`} aria-pressed={tool === entry.tool}>
+                    <Icon size={17} strokeWidth={1.8} />
+                    <kbd>{entry.key}</kbd>
+                  </button>
+                );
+              })}
             </div>
             <div className="zoom-control">
               <button onClick={() => changeZoom(-0.1)} title="縮小（Ctrl+-）">
@@ -742,10 +1048,13 @@ export default function App() {
             onSelect={(id, path) => select(id, path ?? null)}
             onDuplicate={duplicateSelected}
             onDelete={deleteSelected}
-            onPickImage={addImage}
+            onPickImage={async () => (await addImage())?.src ?? null}
             onExportModule={(node) => void runExport("modules", node)}
             onShowCode={(path) => setCode({ tab: "HTFL", file: `${path}/config.yaml` })}
             onError={showError}
+            onSetFrameMode={setFrameMode}
+            onReorder={reorderSelected}
+            onAlign={alignSelected}
           />
         </aside>
       )}
